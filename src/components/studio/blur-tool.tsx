@@ -4,7 +4,7 @@ import { activeRegions } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { NormRect, RegionKind, Source } from "@/lib/studio/types";
 import { Stage } from "@/components/studio/stage";
-import { Button, Field, Select, Slider, TextInput } from "@/components/studio/ui";
+import { Field, Select, Slider, TextInput } from "@/components/studio/ui";
 
 export function BlurTool({
   source,
@@ -89,10 +89,11 @@ export function BlurTool({
           onPointer={onPointer}
         />
       </div>
-      <aside className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:w-80 lg:flex-none lg:border-l lg:border-line">
+      <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
         <div>
-          <h2 className="font-display text-lg font-semibold">Blur studio</h2>
-          <p className="text-sm text-muted">Drag a box on the picture. Touch, pen, and mouse share the same map.</p>
+          <p className="studio-kicker">FRAME TOOLS <span className="text-line">/</span> MASKS</p>
+          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Mask a region</h2>
+          <p className="mt-1 text-sm leading-5 text-muted">Drag a box on the viewer to blur, pixelate, or cover a detail.</p>
         </div>
         <Field label="New region name">
           <TextInput value={label} placeholder="Face, plate, sign" onChange={(event) => setLabel(event.target.value)} />

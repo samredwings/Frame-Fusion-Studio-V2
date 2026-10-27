@@ -167,10 +167,11 @@ export function FaceTool({
           onToggle={onToggle}
         />
       </div>
-      <aside className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:w-80 lg:flex-none lg:border-l lg:border-line">
+      <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
         <div>
-          <h2 className="font-display text-lg font-semibold">FaceSync</h2>
-          <p className="text-sm text-muted">
+          <p className="studio-kicker">FRAME TOOLS <span className="text-line">/</span> TRACK</p>
+          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Face lock</h2>
+          <p className="mt-1 text-sm leading-5 text-muted">
             Drag a box around the face in the preview for a reliable manual lock. Suggest lock uses a lightweight color heuristic and may need correction. Tracking runs locally.
           </p>
         </div>

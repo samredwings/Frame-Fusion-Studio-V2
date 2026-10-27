@@ -119,16 +119,20 @@ export function CompareTool({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row">
-      <div className="flex flex-1 items-center justify-center p-3">
-        <canvas ref={canvasRef} className="aspect-video w-full max-w-3xl rounded-md bg-surface" aria-label="Comparison preview" />
+    <div className="studio-compare flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row">
+      <div className="compare-stage flex flex-1 flex-col justify-center p-3 sm:p-5">
+        <div className="mb-2 flex items-center justify-between px-1 font-mono text-[9px] uppercase tracking-[0.14em] text-muted">
+          <span>Reference A</span>
+          <span className="text-cyan">{score === null ? "Aligning takes" : `${score}% visual match`}</span>
+          <span>Take B</span>
+        </div>
+        <canvas ref={canvasRef} className="compare-canvas aspect-video w-full max-w-4xl self-center rounded-xl bg-surface-2" aria-label="Comparison preview" />
       </div>
-      <aside className="space-y-4 border-line p-4 lg:w-80 lg:border-l">
+      <aside className="studio-inspector space-y-4 p-4 sm:p-5 lg:w-80 lg:flex-none">
         <div>
-          <h2 className="font-display text-lg font-semibold">Multi-compare</h2>
-          <p className="text-sm text-muted">
-            {primary.filename} against {other.filename}. Match {score === null ? "—" : `${score}%`}.
-          </p>
+          <p className="studio-kicker">TAKE ALIGNMENT</p>
+          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Compare frames</h2>
+          <p className="mt-1 truncate text-sm text-muted">{primary.filename} <span className="text-line">vs</span> {other.filename}</p>
         </div>
         <label className="block space-y-1.5 text-sm">
           <span className="text-muted">Second take</span>
@@ -140,11 +144,11 @@ export function CompareTool({
             ))}
           </Select>
         </label>
-        <div className="flex flex-wrap gap-2">
+        <div className="compare-modes grid grid-cols-3 gap-1 rounded-xl p-1" role="group" aria-label="Compare mode">
           {(["split", "wipe", "diff"] as const).map((item) => (
-            <Button key={item} tone={mode === item ? "solid" : "line"} onClick={() => setMode(item)}>
-              {item === "split" ? "Split" : item === "wipe" ? "Wipe" : "Difference"}
-            </Button>
+            <button key={item} type="button" className={`min-h-11 rounded-lg px-2 text-xs font-medium transition-[background-color,color] duration-150 ${mode === item ? "bg-surface-2 text-fg" : "text-muted hover:text-fg"}`} aria-pressed={mode === item} onClick={() => setMode(item)}>
+              {item === "split" ? "Split" : item === "wipe" ? "Wipe" : "Diff"}
+            </button>
           ))}
         </div>
         {mode === "wipe" ? <Slider label="Wipe" min={0} max={100} value={wipe} suffix="%" onChange={setWipe} /> : null}

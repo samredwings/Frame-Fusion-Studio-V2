@@ -126,10 +126,11 @@ export function ExportTool({
           onToggle={onToggle}
         />
       </div>
-      <aside className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4 lg:w-80 lg:flex-none lg:border-l lg:border-line">
+      <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
         <div>
-          <h2 className="font-display text-lg font-semibold">Exports</h2>
-          <p className="text-sm text-muted">Burns in grades, replacements, blur regions, and face nudges for this take.</p>
+          <p className="studio-kicker">FRAME TOOLS <span className="text-line">/</span> FINISH</p>
+          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Render a take</h2>
+          <p className="mt-1 text-sm leading-5 text-muted">Burn edits into a WebM, then save or share the finished clip.</p>
         </div>
         <div className="grid grid-cols-3 gap-2">
           {(

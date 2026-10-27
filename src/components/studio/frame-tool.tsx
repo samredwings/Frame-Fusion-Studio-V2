@@ -105,10 +105,11 @@ export function FrameTool({
           previewRef={previewRef}
         />
       </div>
-      <aside className="min-h-0 flex-1 space-y-4 overflow-y-auto border-line p-4 lg:w-80 lg:flex-none lg:border-l">
+      <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
         <div>
-          <h2 className="font-display text-lg font-semibold">Frame editor</h2>
-          <p className="text-sm text-muted">Grade the current frame, drop in a replacement still, or pull the PNG.</p>
+          <p className="studio-kicker">FRAME TOOLS <span className="text-line">/</span> {String(frameIndex + 1).padStart(2, "0")}</p>
+          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Color &amp; finish</h2>
+          <p className="mt-1 text-sm leading-5 text-muted">Tune this frame, swap in a still, or save a clean PNG.</p>
         </div>
         <Slider label="Exposure" min={40} max={160} value={grade.brightness} suffix="%" onChange={(brightness) => setGrade({ ...grade, brightness })} />
         <Slider label="Contrast" min={40} max={180} value={grade.contrast} suffix="%" onChange={(contrast) => setGrade({ ...grade, contrast })} />

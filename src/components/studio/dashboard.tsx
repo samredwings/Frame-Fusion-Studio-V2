@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Film, Layers, Plus, Scissors, Video } from "lucide-react";
+import { ArrowUpRight, Film, HardDrive, Layers, Plus, Scissors, Video } from "lucide-react";
 import { frameKey, idbGet } from "@/lib/studio/idb";
 import { useStudio } from "@/lib/studio/store";
 import type { Project, ProjectStatus } from "@/lib/studio/types";
@@ -9,7 +9,7 @@ import { Button, Field, TextArea, TextInput } from "@/components/studio/ui";
 
 const statusLabel: Record<ProjectStatus, string> = {
   draft: "Draft",
-  cutting: "Cutting",
+  cutting: "In progress",
   review: "Review",
   delivered: "Delivered",
 };
@@ -30,7 +30,14 @@ function Poster({ sourceId }: { sourceId?: string }) {
       if (current) URL.revokeObjectURL(current);
     };
   }, [sourceId]);
-  if (!url) return <div className="h-full w-full bg-surface-2" />;
+
+  if (!url) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-surface-2 text-muted">
+        <Film className="size-6" aria-hidden="true" />
+      </div>
+    );
+  }
   return <img src={url} alt="" className="h-full w-full object-cover" />;
 }
 
@@ -48,36 +55,29 @@ function ProjectCard({ project }: { project: Project }) {
       to="/projects/$projectId"
       params={{ projectId: project.id }}
       search={{ tool: "frames", source: primary?.id }}
-      className="flex flex-col overflow-hidden rounded-lg border border-line bg-surface transition hover:border-amber/70"
+      className="project-row group grid items-center gap-3 py-3.5 sm:gap-5 sm:py-4"
     >
-      <div className="aspect-video bg-surface-2">
+      <div className="project-poster relative aspect-[4/3] overflow-hidden rounded-xl bg-surface-2">
         <Poster sourceId={primary?.id} />
+        <span className="absolute left-2 top-2 rounded-full bg-bg/85 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-fg backdrop-blur-sm">
+          {projectSources.length ? `${projectSources.length} take${projectSources.length === 1 ? "" : "s"}` : "Empty reel"}
+        </span>
       </div>
-      <div className="flex flex-1 flex-col gap-3 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="truncate font-display text-lg font-semibold">{project.name}</h2>
-            <p className="line-clamp-2 text-sm text-muted">{project.description || "No notes yet."}</p>
-          </div>
-          <span className="shrink-0 rounded-sm bg-cyan-dim px-2 py-1 font-mono text-[11px] uppercase tracking-wider text-cyan">
-            {statusLabel[project.status]}
-          </span>
+      <div className="min-w-0 self-center">
+        <div className="mb-1 flex items-center gap-2">
+          <span className={`size-1.5 rounded-full ${project.status === "delivered" ? "bg-ok" : "bg-amber"}`} aria-hidden="true" />
+          <span className="font-mono text-[9px] uppercase tracking-[0.15em] text-muted">{statusLabel[project.status]}</span>
         </div>
-        <div className="mt-auto grid grid-cols-3 gap-2 text-xs text-muted">
-          <span className="flex items-center gap-1.5 rounded-sm bg-bg px-2 py-2">
-            <Video className="size-3.5 text-amber" aria-hidden="true" />
-            {projectSources.length}
-          </span>
-          <span className="flex items-center gap-1.5 rounded-sm bg-bg px-2 py-2">
-            <Scissors className="size-3.5 text-cyan" aria-hidden="true" />
-            {editCount}
-          </span>
-          <span className="flex items-center gap-1.5 rounded-sm bg-bg px-2 py-2">
-            <Layers className="size-3.5 text-ok" aria-hidden="true" />
-            {regionCount}
-          </span>
+        <h2 className="truncate font-display text-base font-semibold tracking-tight text-fg sm:text-lg">{project.name}</h2>
+        <p className="mt-1 hidden max-w-xl truncate text-sm text-muted sm:block">{project.description || "Open the reel to continue reviewing frames."}</p>
+        <div className="mt-1.5 flex items-center gap-3 font-mono text-[10px] text-muted sm:mt-2 sm:text-[11px]">
+          <span className="inline-flex items-center gap-1.5"><Scissors className="size-3 text-amber" aria-hidden="true" />{editCount} edits</span>
+          <span className="inline-flex items-center gap-1.5"><Layers className="size-3 text-cyan" aria-hidden="true" />{regionCount} regions</span>
         </div>
       </div>
+      <span className="hidden size-10 place-items-center rounded-full text-muted transition-[background-color,color,transform] duration-150 group-hover:translate-x-0.5 group-hover:bg-surface-2 group-hover:text-fg sm:grid" aria-hidden="true">
+        <ArrowUpRight className="size-4" />
+      </span>
     </Link>
   );
 }
@@ -97,7 +97,7 @@ export function Dashboard() {
   async function onCreate(event: React.FormEvent) {
     event.preventDefault();
     if (!name.trim()) {
-      setFormError("Name the project first.");
+      setFormError("Add a project name to continue.");
       return;
     }
     const id = await createProject(name, description);
@@ -109,68 +109,83 @@ export function Dashboard() {
 
   return (
     <Shell>
-      <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-          <div className="max-w-xl">
-            <p className="font-mono text-xs uppercase tracking-[0.18em] text-amber">Local bay</p>
-            <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight sm:text-4xl">Projects</h1>
-            <p className="mt-2 text-sm text-muted">
-              Extract a reel, compare takes, paint masks, and lock a drifting face. Everything stays on this device.
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col overflow-y-auto px-4 pb-8 pt-5 sm:px-8 sm:pt-9">
+        <section className="dashboard-hero">
+          <div className="min-w-0">
+            <p className="studio-kicker">FRAME FUSION <span className="text-line">/</span> LOCAL STUDIO</p>
+            <h1 className="mt-2 font-display text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">Frame Atlas</h1>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-muted sm:text-base">
+              Find the frame. Compare the take. Make the correction. Your footage stays on this device.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <Button tone="line" onClick={() => void restoreDemo()} disabled={!!busy}>
-              <Film className="size-4" aria-hidden="true" />
-              Reset demo reel
-            </Button>
-            <Button onClick={() => setOpen((value) => !value)}>
+          <div className="mt-5 flex shrink-0 flex-wrap gap-2 sm:mt-0 sm:justify-end">
+            <Button onClick={() => { setOpen((value) => !value); setFormError(""); }}>
               <Plus className="size-4" aria-hidden="true" />
               New project
             </Button>
-          </div>
-        </div>
-
-        {open && (
-          <form onSubmit={onCreate} className="mb-6 grid gap-4 rounded-lg border border-line bg-surface p-4 sm:grid-cols-2">
-            <Field label="Project name">
-              <TextInput value={name} onChange={(event) => setName(event.target.value)} placeholder="Night market spot" />
-            </Field>
-            <Field label="Notes">
-              <TextArea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this cut is for" />
-            </Field>
-            {formError ? <p className="text-sm text-danger sm:col-span-2">{formError}</p> : null}
-            <div className="flex gap-2 sm:col-span-2">
-              <Button type="submit">Create and open</Button>
-              <Button tone="ghost" onClick={() => setOpen(false)}>
-                Cancel
-              </Button>
-            </div>
-          </form>
-        )}
-
-        {!ready ? (
-          <div className="rounded-lg border border-dashed border-line px-6 py-16 text-center">
-            <p className="font-display text-xl">Restoring the bay…</p>
-            <p className="mt-2 text-sm text-muted">Loading projects stored on this device.</p>
-          </div>
-        ) : projects.length ? (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {projects.map((project) => (
-              <ProjectCard key={project.id} project={project} />
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-lg border border-dashed border-line px-6 py-16 text-center">
-            <h2 className="font-display text-xl">No reels in the bay</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-muted">
-              Start a project or bring Harbor Night back to try the five tools.
-            </p>
-            <Button className="mt-5" tone="line" onClick={() => setOpen(true)}>
-              Create project
+            <Button tone="line" onClick={() => void restoreDemo()} disabled={!!busy}>
+              <Film className="size-4" aria-hidden="true" />
+              Restore sample
             </Button>
           </div>
-        )}
-      </div>
+        </section>
+
+        <div className="my-5 flex items-center gap-2.5 border-y border-line/70 py-3 text-xs text-muted sm:my-7">
+          <HardDrive className="size-4 shrink-0 text-cyan" aria-hidden="true" />
+          <span className="min-w-0">Private library <span className="text-line">·</span> projects, frame edits, and exports are stored locally</span>
+        </div>
+
+        {open ? (
+          <form onSubmit={onCreate} className="studio-panel mb-6 rounded-2xl p-4 sm:p-5">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="studio-kicker">NEW REEL</p>
+                <h2 className="mt-1 font-display text-xl font-semibold">Start a project</h2>
+              </div>
+              <button type="button" className="min-h-11 rounded-full px-3 text-sm text-muted hover:bg-surface-2 hover:text-fg" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="Project name">
+                <TextInput autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Night market spot" />
+              </Field>
+              <Field label="Notes">
+                <TextArea className="min-h-11" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What are you reviewing?" />
+              </Field>
+            </div>
+            {formError ? <p className="mt-3 text-sm text-danger">{formError}</p> : null}
+            <div className="mt-4 flex justify-end">
+              <Button type="submit">Create and open</Button>
+            </div>
+          </form>
+        ) : null}
+
+        <section aria-labelledby="recent-projects-title" className="flex min-h-0 flex-1 flex-col">
+          <div className="mb-1 flex items-end justify-between gap-3">
+            <div>
+              <p className="studio-kicker">ON THIS DEVICE</p>
+              <h2 id="recent-projects-title" className="mt-1 font-display text-xl font-semibold tracking-tight">Recent projects</h2>
+            </div>
+            {ready && projects.length ? <span className="pb-1 font-mono text-[10px] uppercase tracking-wider text-muted">{String(projects.length).padStart(2, "0")} reels</span> : null}
+          </div>
+
+          {!ready ? (
+            <div className="py-12 text-sm text-muted" role="status">Opening your local library…</div>
+          ) : projects.length ? (
+            <div className="project-list divide-y divide-line/70">
+              {projects.map((project) => <ProjectCard key={project.id} project={project} />)}
+            </div>
+          ) : (
+            <div className="studio-panel empty-library mt-4 rounded-2xl px-5 py-10 text-center sm:py-14">
+              <span className="mx-auto grid size-12 place-items-center rounded-2xl bg-surface-2 text-amber"><Video className="size-5" aria-hidden="true" /></span>
+              <h3 className="mt-4 font-display text-lg font-semibold">Your first reel starts here</h3>
+              <p className="mx-auto mt-1.5 max-w-sm text-sm leading-6 text-muted">Create a project, then import a clip to build a private frame library on this device.</p>
+              <Button className="mt-5" onClick={() => setOpen(true)}><Plus className="size-4" aria-hidden="true" />Create project</Button>
+            </div>
+          )}
+        </section>
+      </main>
     </Shell>
   );
 }

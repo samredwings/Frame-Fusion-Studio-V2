@@ -109,15 +109,22 @@ export function Stage({
   }
 
   return (
-    <div className="flex min-w-0 shrink-0 flex-col border-b border-line bg-bg">
-      <div className="flex justify-center px-3 pt-3">
+    <div className="studio-stage flex min-w-0 shrink-0 flex-col">
+      <div className="stage-meta flex items-center justify-between gap-3 px-3 pb-2 pt-3 sm:px-5 sm:pt-4">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-surface-2 font-mono text-[10px] text-amber">A</span>
+          <span className="truncate font-mono text-[10px] uppercase tracking-[0.14em] text-muted">Reference take</span>
+        </div>
+        <span className="shrink-0 font-mono text-[10px] tracking-wide text-muted">F {String(frameIndex + 1).padStart(2, "0")} <span className="text-line">/</span> {String(source.frameCount).padStart(2, "0")}</span>
+      </div>
+      <div className="flex justify-center px-3 sm:px-5">
         <div className="stage-frame w-full" style={{ ["--ratio" as string]: String(ratio) }}>
           <canvas
             ref={(node) => {
               canvasRef.current = node;
               if (previewRef) previewRef.current = node;
             }}
-            className={`block h-auto w-full rounded-md bg-surface ${onPointer ? "touch-none" : ""}`}
+            className={`studio-canvas block h-auto w-full rounded-xl bg-surface-2 ${onPointer ? "touch-none" : ""}`}
             aria-label="Frame preview"
             onPointerDown={(event) => {
               if (!onPointer) return;
@@ -132,7 +139,7 @@ export function Stage({
           />
         </div>
       </div>
-      <div className="flex items-center gap-2 px-3 py-2">
+      <div className="stage-controls flex items-center gap-2 px-3 py-2.5 sm:px-5">
         <Button tone="quiet" className="w-11 px-0" aria-label="Previous frame" onClick={() => onSeek(Math.max(0, frameIndex - 1))}>
           <SkipBack className="size-4" />
         </Button>
@@ -160,20 +167,21 @@ export function Stage({
           {formatClock(frameIndex, source.fps)} · {frameIndex + 1}/{source.frameCount}
         </span>
       </div>
-      <div className="flex gap-2 overflow-x-auto px-3 pb-3" aria-label="Filmstrip">
+      <div className="stage-filmstrip flex gap-2 overflow-x-auto px-3 pb-3 sm:px-5" aria-label="Frame rail">
         {urls.map((url, index) => (
           <button
             key={`${source.id}-${index}`}
             type="button"
-            className={`relative h-14 w-20 shrink-0 overflow-hidden rounded-sm border ${
-              index === frameIndex ? "border-amber" : "border-line"
+            className={`stage-thumb relative h-14 w-20 shrink-0 overflow-hidden rounded-lg ${
+              index === frameIndex ? "is-selected" : ""
             }`}
             aria-label={`Frame ${index + 1}`}
             aria-current={index === frameIndex}
             onClick={() => onSeek(index)}
           >
             <img src={url} alt="" className="h-full w-full object-cover" />
-            {marked?.[index] ? <span className="absolute right-1 top-1 size-1.5 rounded-full bg-amber" /> : null}
+            <span className="filmstrip-index absolute bottom-1 left-1.5 rounded px-1 font-mono text-[8px]">{String(index + 1).padStart(2, "0")}</span>
+            {marked?.[index] ? <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-amber" /> : null}
           </button>
         ))}
       </div>
