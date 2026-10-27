@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { measureDrift, suggestLock, type DriftPoint } from "@/lib/studio/draw";
 import { loadImage } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
-import type { Source } from "@/lib/studio/types";
+import type { NormRect, Source } from "@/lib/studio/types";
 import { Stage, type Guide } from "@/components/studio/stage";
 import { Button, Slider } from "@/components/studio/ui";
 
@@ -29,6 +29,8 @@ export function FaceTool({
   const [drift, setDrift] = useState<DriftPoint[]>([]);
   const [threshold, setThreshold] = useState(22);
   const [status, setStatus] = useState("");
+  const [draft, setDraft] = useState<NormRect | null>(null);
+  const anchor = useRef<{ x: number; y: number } | null>(null);
   const nudge = edits.find((edit) => edit.sourceId === source.id && edit.kind === "nudge" && edit.frameIndex === frameIndex);
   const point = drift.find((item) => item.index === frameIndex);
   const guides: Guide[] = [];
@@ -69,6 +71,40 @@ export function FaceTool({
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not place a lock.");
     }
+  }
+
+
+  function onLockPointer(event: { phase: "down" | "move" | "up"; x: number; y: number }) {
+    if (event.phase === "down") {
+      anchor.current = { x: event.x, y: event.y };
+      setDraft({ x: event.x, y: event.y, w: 0, h: 0 });
+      setStatus("Drag around the face to set its tracking region.");
+      return;
+    }
+    const start = anchor.current;
+    if (!start) return;
+    const rect = {
+      x: Math.min(start.x, event.x),
+      y: Math.min(start.y, event.y),
+      w: Math.abs(event.x - start.x),
+      h: Math.abs(event.y - start.y),
+    };
+    if (event.phase === "move") {
+      setDraft(rect);
+      return;
+    }
+    anchor.current = null;
+    setDraft(null);
+    if (rect.w < 0.03 || rect.h < 0.03) {
+      setStatus("Draw a larger box around the face.");
+      return;
+    }
+    void setLock(source.id, rect).then(() => {
+      setDrift([]);
+      setStatus("Manual face lock saved. Track the reel to measure drift.");
+    }).catch((error) => {
+      setStatus(error instanceof Error ? error.message : "Could not save the face lock.");
+    });
   }
 
   async function track() {
@@ -124,6 +160,8 @@ export function FaceTool({
           nudge={nudge && nudge.kind === "nudge" ? { dx: nudge.dx, dy: nudge.dy } : null}
           regions={[]}
           guides={guides}
+          draft={draft}
+          onPointer={onLockPointer}
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
@@ -133,13 +171,25 @@ export function FaceTool({
         <div>
           <h2 className="font-display text-lg font-semibold">FaceSync</h2>
           <p className="text-sm text-muted">
-            Lock a face, measure how far it wanders, then nudge those frames back. No cloud model — the match runs here.
+            Drag a box around the face in the preview for a reliable manual lock. Suggest lock uses a lightweight color heuristic and may need correction. Tracking runs locally.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button onClick={() => void autoFind()}>Auto-lock</Button>
+          <Button onClick={() => void autoFind()}>Suggest lock</Button>
           <Button tone="line" onClick={() => void track()} disabled={!source.lock}>
             Track reel
+          </Button>
+          <Button
+            tone="line"
+            onClick={() => {
+              void setLock(source.id, null).then(() => {
+                setDrift([]);
+                setStatus("Face lock cleared.");
+              });
+            }}
+            disabled={!source.lock}
+          >
+            Clear lock
           </Button>
           <Button tone="line" onClick={() => void stabilize()} disabled={!drift.length}>
             Stabilize
