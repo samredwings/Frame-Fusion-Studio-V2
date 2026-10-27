@@ -235,7 +235,7 @@ export function Workspace({
       {!source ? (
         <div className="m-auto max-w-md px-6 text-center">
           <h2 className="font-display text-xl">Import a video to start cutting</h2>
-          <p className="mt-2 text-sm text-muted">Frames are extracted in the browser and kept with this project. Cap is 48 frames.</p>
+          <p className="mt-2 text-sm text-muted">Frames stay on this device. Imports capture at most 48 frames from the start of a clip, and the project duration reflects only that captured segment.</p>
           <Button className="mt-5" onClick={() => fileRef.current?.click()}>
             <Upload className="size-4" />
             Import video
