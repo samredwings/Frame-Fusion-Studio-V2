@@ -111,7 +111,15 @@ function main(argv) {
     process.exit(2);
   }
   const env = mergeAppEnv(readAppEnv(projectRoot()), process.env);
-  const child = spawn(command, args, { stdio: "inherit", env });
+  // Windows exposes npm-installed command shims as .cmd files, which spawn()
+  // cannot execute directly. Invoke Vite's JavaScript entry point with Node so
+  // the existing wrapper works on both Windows and the Linux preview host.
+  const isWindowsVite = process.platform === "win32" && command === "vite";
+  const child = spawn(
+    isWindowsVite ? process.execPath : command,
+    isWindowsVite ? [join(projectRoot(), "node_modules", "vite", "bin", "vite.js"), ...args] : args,
+    { stdio: "inherit", env },
+  );
   // The dev server is long-running and is stopped by signalling this wrapper.
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.on(signal, () => child.kill(signal));

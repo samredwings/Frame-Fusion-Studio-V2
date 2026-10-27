@@ -15,7 +15,10 @@ export function Shell({
   const dismiss = useStudio((state) => state.dismiss);
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-bg text-fg">
+    <div
+      className="flex h-dvh flex-col overflow-hidden bg-bg text-fg"
+      style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}
+    >
       <header className="flex shrink-0 items-center gap-3 border-b border-line px-3 py-2 sm:px-4">
         <Link to="/" className="flex min-h-11 items-center gap-2 text-amber">
           <Clapperboard className="size-5" aria-hidden="true" />

@@ -115,7 +115,7 @@ export function Dashboard() {
             <p className="font-mono text-xs uppercase tracking-[0.18em] text-amber">Local bay</p>
             <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight sm:text-4xl">Projects</h1>
             <p className="mt-2 text-sm text-muted">
-              Extract a reel, compare takes, paint masks, and lock a drifting face. Everything stays in this browser.
+              Extract a reel, compare takes, paint masks, and lock a drifting face. Everything stays on this device.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

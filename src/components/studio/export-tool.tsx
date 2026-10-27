@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Download, Trash2 } from "lucide-react";
 import { evenSize, renderFrame } from "@/lib/studio/draw";
 import { idbGet } from "@/lib/studio/idb";
+import { downloadOrShareBlob } from "@/lib/studio/download";
 import { activeRegions, loadImage, recordFrames } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { Grade, Source } from "@/lib/studio/types";
@@ -101,12 +102,11 @@ export function ExportTool({
       setMessage("That export file is missing. Render it again.");
       return;
     }
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    try {
+      await downloadOrShareBlob(blob, filename);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not share that export.");
+    }
     void id;
   }
 

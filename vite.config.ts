@@ -163,10 +163,20 @@ export default defineConfig(({ command, isPreview }) => ({
     authPopupPlugin(),
     // Dev-only /__app-env, read by scripts/check-auth-invariant.mjs.
     appEnvPlugin(),
-    // PWA head + ?install=1 tutorial page; runs before Start/Nitro.
+    // Keep the PWA plugin registered in both builds because the Nitro
+    // middleware resolves its virtual OG identity at build time.
     grokPwaPlugin(),
     tailwindcss(),
-    tanstackStart(),
+    tanstackStart(
+      process.env.CAPACITOR_BUILD === "1"
+        ? {
+            spa: {
+              enabled: true,
+              prerender: { outputPath: "/index.html" },
+            },
+          }
+        : {},
+    ),
     ...(command === "build" || isPreview
       ? [
           nitro({

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, RotateCcw } from "lucide-react";
 import { idbPut } from "@/lib/studio/idb";
+import { downloadOrShareBlob } from "@/lib/studio/download";
 import { useStudio } from "@/lib/studio/store";
 import { NEUTRAL_GRADE, type Grade, type Source } from "@/lib/studio/types";
 import { useReplacements } from "@/components/studio/use-frames";
@@ -71,18 +72,19 @@ export function FrameTool({
     });
   }
 
-  function downloadStill() {
+  async function downloadStill() {
     const canvas = previewRef.current;
     if (!canvas) return;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${source.filename.replace(/\.\w+$/, "")}-f${String(frameIndex).padStart(3, "0")}.png`;
-      link.click();
-      URL.revokeObjectURL(url);
-    }, "image/png");
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) return;
+    try {
+      await downloadOrShareBlob(
+        blob,
+        `${source.filename.replace(/\.\w+$/, "")}-f${String(frameIndex).padStart(3, "0")}.png`,
+      );
+    } catch (error) {
+      useStudio.setState({ error: error instanceof Error ? error.message : "Could not share that frame." });
+    }
   }
 
   return (
