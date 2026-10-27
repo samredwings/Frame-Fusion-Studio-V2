@@ -6,7 +6,7 @@ import { downloadOrShareBlob } from "@/lib/studio/download";
 import { activeRegions, loadImage, recordFrames } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { Grade, Source } from "@/lib/studio/types";
-import { Stage } from "@/components/studio/stage";
+import { Stage, type FrameAction } from "@/components/studio/stage";
 import { Button, formatBytes } from "@/components/studio/ui";
 
 type Quality = "draft" | "standard" | "full";
@@ -19,6 +19,7 @@ export function ExportTool({
   playing,
   onSeek,
   onToggle,
+  onFrameAction,
 }: {
   source: Source;
   urls: string[];
@@ -27,6 +28,7 @@ export function ExportTool({
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
+  onFrameAction?: (action: FrameAction, index: number) => void;
 }) {
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
@@ -112,7 +114,7 @@ export function ExportTool({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <div className="min-w-0 lg:flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <Stage
           source={source}
           urls={urls}
@@ -124,6 +126,7 @@ export function ExportTool({
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
+          onFrameAction={onFrameAction}
         />
       </div>
       <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">

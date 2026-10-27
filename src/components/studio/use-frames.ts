@@ -19,12 +19,18 @@ export function useBaseFrames(source: Source | undefined) {
     setLoading(true);
     void (async () => {
       const next: string[] = [];
-      for (let index = 0; index < frameCount; index++) {
-        const blob = await idbGet<Blob>("blobs", frameKey(sourceId, index));
-        if (!blob) continue;
-        const url = URL.createObjectURL(blob);
-        created.push(url);
-        next.push(url);
+      for (let start = 0; start < frameCount; start += 12) {
+        const batch = await Promise.all(
+          Array.from({ length: Math.min(12, frameCount - start) }, (_, offset) =>
+            idbGet<Blob>("blobs", frameKey(sourceId, start + offset)),
+          ),
+        );
+        for (const blob of batch) {
+          if (!blob) continue;
+          const url = URL.createObjectURL(blob);
+          created.push(url);
+          next.push(url);
+        }
       }
       if (cancelled) {
         created.forEach((url) => URL.revokeObjectURL(url));

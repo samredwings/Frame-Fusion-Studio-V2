@@ -3,7 +3,7 @@ import { Trash2 } from "lucide-react";
 import { activeRegions } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { NormRect, RegionKind, Source } from "@/lib/studio/types";
-import { Stage } from "@/components/studio/stage";
+import { Stage, type FrameAction } from "@/components/studio/stage";
 import { Field, Select, Slider, TextInput } from "@/components/studio/ui";
 
 export function BlurTool({
@@ -14,6 +14,7 @@ export function BlurTool({
   playing,
   onSeek,
   onToggle,
+  onFrameAction,
 }: {
   source: Source;
   urls: string[];
@@ -22,6 +23,7 @@ export function BlurTool({
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
+  onFrameAction?: (action: FrameAction, index: number) => void;
 }) {
   const regions = useStudio((state) => state.regions);
   const edits = useStudio((state) => state.edits);
@@ -73,7 +75,7 @@ export function BlurTool({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <div className="min-w-0 lg:flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <Stage
           source={source}
           urls={urls}
@@ -86,6 +88,7 @@ export function BlurTool({
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
+          onFrameAction={onFrameAction}
           onPointer={onPointer}
         />
       </div>

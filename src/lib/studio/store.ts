@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import { frameKey, idbAll, idbDel, idbGet, idbPut } from "@/lib/studio/idb";
-import { extractVideoFrames } from "@/lib/studio/media";
+import { frameKey, idbAll, idbBatch, idbDel, idbGet, idbPut, type IDBBatchOperation } from "@/lib/studio/idb";
+import { extractVideoFrames, MAX_CAPTURE_SECONDS } from "@/lib/studio/media";
 import { DEMO_PROJECT_ID, seedDemo } from "@/lib/studio/sample";
 import type { ExportItem, FrameEdit, Grade, Project, ProjectStatus, Region, RegionKind, Source, SourceRole } from "@/lib/studio/types";
 
@@ -22,6 +22,7 @@ type StudioState = {
   restoreDemo: () => Promise<void>;
   importVideo: (projectId: string, file: File, fps: number) => Promise<string>;
   deleteSource: (id: string) => Promise<void>;
+  deleteFrame: (sourceId: string, frameIndex: number) => Promise<void>;
   setLock: (sourceId: string, lock: Source["lock"]) => Promise<void>;
   upsertEdit: (edit: FrameEdit) => Promise<void>;
   clearFrame: (sourceId: string, frameIndex: number) => Promise<void>;
@@ -99,7 +100,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       name: name.trim(),
       description: description.trim(),
       status: "draft",
-      fps: 8,
+      fps: 24,
       createdAt: now,
       updatedAt: now,
     };
@@ -144,14 +145,27 @@ export const useStudio = create<StudioState>((set, get) => ({
     const looksVideo = file.type.startsWith("video/") || /\.(mp4|webm|mov|mkv|ogv|m4v)$/i.test(file.name);
     if (!looksVideo) throw new Error("Choose a video file.");
     const id = crypto.randomUUID();
+    let savedFrameCount = 0;
     set({ busy: "Reading the video…", error: null });
     try {
-      const extracted = await extractVideoFrames(file, fps, 48, (done, total) => {
-        set({ busy: `Extracting frame ${done} of ${total}` });
+      let lastProgressAt = 0;
+      const extracted = await extractVideoFrames(file, fps, fps * MAX_CAPTURE_SECONDS, (done, total) => {
+        const now = Date.now();
+        if (done === 1 || done === total || now - lastProgressAt >= 150) {
+          lastProgressAt = now;
+          set({ busy: `Extracting frame ${done} of ${total}` });
+        }
       });
-      for (let i = 0; i < extracted.frames.length; i++) {
-        const blob = extracted.frames[i];
-        if (blob) await idbPut("blobs", frameKey(id, i), blob);
+      set({ busy: "Saving extracted frames…" });
+      for (let start = 0; start < extracted.frames.length; start += 8) {
+        const batch = extracted.frames.slice(start, start + 8);
+        await idbBatch(batch.map((blob, offset) => ({
+          kind: "put" as const,
+          store: "blobs",
+          key: frameKey(id, start + offset),
+          value: blob,
+        })));
+        savedFrameCount += batch.length;
       }
       const role: SourceRole = get().sources.some((source) => source.projectId === projectId) ? "compare" : "primary";
       const source: Source = {
@@ -182,7 +196,11 @@ export const useStudio = create<StudioState>((set, get) => ({
       set({ sources: [...get().sources, source], busy: null, notice: `Imported ${extracted.frames.length} frames (${extracted.duration.toFixed(1)}s captured) from ${file.name}.` });
       return id;
     } catch (error) {
-      for (let i = 0; i < 48; i++) await idbDel("blobs", frameKey(id, i)).catch(() => undefined);
+      await idbBatch(Array.from({ length: savedFrameCount }, (_, index) => ({
+        kind: "delete" as const,
+        store: "blobs",
+        key: frameKey(id, index),
+      }))).catch(() => undefined);
       await idbDel("sources", id).catch(() => undefined);
       const message = error instanceof Error ? error.message : "Import failed.";
       set({ busy: null, error: message });
@@ -202,6 +220,75 @@ export const useStudio = create<StudioState>((set, get) => ({
       exports: get().exports.filter((item) => item.sourceId !== id),
     });
   },
+  deleteFrame: async (sourceId, frameIndex) => {
+    const source = get().sources.find((item) => item.id === sourceId);
+    if (!source || frameIndex < 0 || frameIndex >= source.frameCount) return;
+    if (source.frameCount <= 1) throw new Error("A take must keep at least one frame.");
+
+    const lastIndex = source.frameCount - 1;
+    const shiftedFrames = await Promise.all(
+      Array.from({ length: lastIndex - frameIndex }, (_, offset) =>
+        idbGet<Blob>("blobs", frameKey(sourceId, frameIndex + offset + 1)),
+      ),
+    );
+    if (shiftedFrames.some((blob) => !blob)) throw new Error("A frame is missing from this take. Refresh the library and try again.");
+
+    const operations: IDBBatchOperation[] = [];
+    shiftedFrames.forEach((blob, offset) => {
+      operations.push({ kind: "put", store: "blobs", key: frameKey(sourceId, frameIndex + offset), value: blob });
+    });
+    operations.push({ kind: "delete", store: "blobs", key: frameKey(sourceId, lastIndex) });
+
+    const edits = get().edits.filter((edit) => edit.sourceId === sourceId);
+    for (const edit of edits) {
+      if (edit.frameIndex === frameIndex) {
+        operations.push({ kind: "delete", store: "edits", key: edit.id });
+        if (edit.kind === "replace") operations.push({ kind: "delete", store: "blobs", key: edit.blobKey });
+      } else if (edit.frameIndex > frameIndex) {
+        operations.push({ kind: "put", store: "edits", key: edit.id, value: { ...edit, frameIndex: edit.frameIndex - 1 } });
+      }
+    }
+
+    const regions = get().regions.filter((region) => region.sourceId === sourceId);
+    const updatedRegions = new Map<string, Region>();
+    const deletedRegionIds = new Set<string>();
+    for (const region of regions) {
+      if (frameIndex < region.frameIn) {
+        updatedRegions.set(region.id, { ...region, frameIn: region.frameIn - 1, frameOut: region.frameOut - 1 });
+      } else if (frameIndex <= region.frameOut) {
+        const next = { ...region, frameOut: region.frameOut - 1 };
+        if (next.frameIn > next.frameOut) {
+          operations.push({ kind: "delete", store: "regions", key: region.id });
+          deletedRegionIds.add(region.id);
+        } else updatedRegions.set(region.id, next);
+      }
+    }
+
+    const updatedSource: Source = {
+      ...source,
+      frameCount: source.frameCount - 1,
+      durationMs: Math.max(1, Math.round(((source.frameCount - 1) / source.fps) * 1000)),
+    };
+    operations.push({ kind: "put", store: "sources", key: sourceId, value: updatedSource });
+    for (const region of updatedRegions.values()) {
+      const old = regions.find((item) => item.id === region.id);
+      if (old && (old.frameIn !== region.frameIn || old.frameOut !== region.frameOut)) {
+        operations.push({ kind: "put", store: "regions", key: region.id, value: region });
+      }
+    }
+
+    await idbBatch(operations);
+    set({
+      sources: get().sources.map((item) => (item.id === sourceId ? updatedSource : item)),
+      edits: get().edits
+        .filter((edit) => edit.sourceId !== sourceId || edit.frameIndex !== frameIndex)
+        .map((edit) => edit.sourceId === sourceId && edit.frameIndex > frameIndex ? { ...edit, frameIndex: edit.frameIndex - 1 } : edit),
+      regions: get().regions
+        .filter((region) => !deletedRegionIds.has(region.id))
+        .map((region) => updatedRegions.get(region.id) ?? region),
+      notice: `Removed frame ${frameIndex + 1}. Remaining frame edits and masks were kept in sync.`,
+    });
+  },
   setLock: async (sourceId, lock) => {
     const source = get().sources.find((item) => item.id === sourceId);
     if (!source) return;
@@ -213,15 +300,16 @@ export const useStudio = create<StudioState>((set, get) => ({
     const previous = get().edits.find(
       (item) => item.sourceId === edit.sourceId && item.frameIndex === edit.frameIndex && item.kind === edit.kind,
     );
-    if (previous && previous.id !== edit.id) {
-      if (previous.kind === "replace") await idbDel("blobs", previous.blobKey);
-      await idbDel("edits", previous.id);
-    }
     if (edit.kind === "replace") {
       const blob = await idbGet<Blob>("blobs", edit.blobKey);
       if (!blob) throw new Error("The replacement frame was not stored.");
     }
-    await idbPut("edits", edit.id, edit);
+    const operations: IDBBatchOperation[] = [{ kind: "put", store: "edits", key: edit.id, value: edit }];
+    if (previous && previous.id !== edit.id) {
+      operations.push({ kind: "delete", store: "edits", key: previous.id });
+      if (previous.kind === "replace") operations.push({ kind: "delete", store: "blobs", key: previous.blobKey });
+    }
+    await idbBatch(operations);
     set({
       edits: [...get().edits.filter((item) => item.id !== previous?.id && item.id !== edit.id), edit],
     });

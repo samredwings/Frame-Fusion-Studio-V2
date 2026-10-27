@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, RotateCcw } from "lucide-react";
-import { idbPut } from "@/lib/studio/idb";
+import { idbDel, idbPut } from "@/lib/studio/idb";
 import { downloadOrShareBlob } from "@/lib/studio/download";
 import { useStudio } from "@/lib/studio/store";
 import { NEUTRAL_GRADE, type Grade, type Source } from "@/lib/studio/types";
 import { useReplacements } from "@/components/studio/use-frames";
-import { Stage } from "@/components/studio/stage";
+import { Stage, type FrameAction } from "@/components/studio/stage";
 import { Button, Slider } from "@/components/studio/ui";
 
 export function FrameTool({
@@ -15,6 +15,7 @@ export function FrameTool({
   playing,
   onSeek,
   onToggle,
+  onFrameAction,
   previewRef,
 }: {
   source: Source;
@@ -23,6 +24,7 @@ export function FrameTool({
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
+  onFrameAction?: (action: FrameAction, index: number) => void;
   previewRef: React.MutableRefObject<HTMLCanvasElement | null>;
 }) {
   const allEdits = useStudio((state) => state.edits);
@@ -61,15 +63,20 @@ export function FrameTool({
   async function onReplace(file: File) {
     const id = crypto.randomUUID();
     const blobKey = `r:${id}`;
-    await idbPut("blobs", blobKey, file);
-    await upsertEdit({
-      id,
-      projectId: source.projectId,
-      sourceId: source.id,
-      frameIndex,
-      kind: "replace",
-      blobKey,
-    });
+    try {
+      await idbPut("blobs", blobKey, file);
+      await upsertEdit({
+        id,
+        projectId: source.projectId,
+        sourceId: source.id,
+        frameIndex,
+        kind: "replace",
+        blobKey,
+      });
+    } catch (error) {
+      await idbDel("blobs", blobKey).catch(() => undefined);
+      useStudio.setState({ error: error instanceof Error ? error.message : "Could not replace that frame." });
+    }
   }
 
   async function downloadStill() {
@@ -89,7 +96,7 @@ export function FrameTool({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <div className="min-w-0 lg:flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <Stage
           source={source}
           urls={urls}
@@ -102,6 +109,7 @@ export function FrameTool({
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
+          onFrameAction={onFrameAction}
           previewRef={previewRef}
         />
       </div>

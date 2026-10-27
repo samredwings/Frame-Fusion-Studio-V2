@@ -4,6 +4,7 @@ import type { Grade, Region } from "@/lib/studio/types";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 const MEDIA_WAIT_TIMEOUT_MS = 15_000;
+export const MAX_CAPTURE_SECONDS = 6;
 
 export function loadImage(src: string): Promise<HTMLImageElement> {
   const hit = imageCache.get(src);
@@ -132,12 +133,17 @@ export async function extractVideoFrames(
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Could not draw frames.");
     const frames: Blob[] = [];
+    const pending: Promise<Blob>[] = [];
     for (let i = 0; i < count; i++) {
       await seekTo(video, i / fps);
       ctx.drawImage(video, 0, 0, sized.width, sized.height);
-      frames.push(await canvasToBlob(canvas, "image/jpeg", 0.84));
+      const encoding = canvasToBlob(canvas, "image/jpeg", 0.84);
+      void encoding.catch(() => undefined);
+      pending.push(encoding);
       onProgress(i + 1, count);
+      if (pending.length >= 6) frames.push(...(await Promise.all(pending.splice(0))));
     }
+    frames.push(...(await Promise.all(pending)));
     // Only the first count / fps seconds are represented by these frames. Store
     // that processed duration rather than the full input duration, otherwise
     // playback/export metadata claims to cover footage that was never imported.

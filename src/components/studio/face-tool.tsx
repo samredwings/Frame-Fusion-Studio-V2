@@ -3,7 +3,7 @@ import { measureDrift, suggestLock, type DriftPoint } from "@/lib/studio/draw";
 import { loadImage } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { NormRect, Source } from "@/lib/studio/types";
-import { Stage, type Guide } from "@/components/studio/stage";
+import { Stage, type FrameAction, type Guide } from "@/components/studio/stage";
 import { Button, Slider } from "@/components/studio/ui";
 
 export function FaceTool({
@@ -14,6 +14,7 @@ export function FaceTool({
   playing,
   onSeek,
   onToggle,
+  onFrameAction,
 }: {
   source: Source;
   urls: string[];
@@ -22,6 +23,7 @@ export function FaceTool({
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
+  onFrameAction?: (action: FrameAction, index: number) => void;
 }) {
   const edits = useStudio((state) => state.edits);
   const setLock = useStudio((state) => state.setLock);
@@ -150,7 +152,7 @@ export function FaceTool({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <div className="min-w-0 lg:flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
         <Stage
           source={source}
           urls={urls}
@@ -165,6 +167,7 @@ export function FaceTool({
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
+          onFrameAction={onFrameAction}
         />
       </div>
       <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
