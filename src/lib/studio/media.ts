@@ -102,7 +102,7 @@ export async function extractVideoFrames(
     // Only the first count / fps seconds are represented by these frames. Store
     // that processed duration rather than the full input duration, otherwise
     // playback/export metadata claims to cover footage that was never imported.
-    const capturedDuration = Math.min(duration, count / fps);
+    const capturedDuration = count / fps;
     return { width: sized.width, height: sized.height, duration: capturedDuration, frames };
   } finally {
     URL.revokeObjectURL(url);
