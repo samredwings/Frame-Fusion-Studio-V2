@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Film, Image as ImageIcon, Pause, Play, SkipBack, SkipForward, Trash2 } from "lucide-react";
 import { renderFrame } from "@/lib/studio/draw";
 import { loadImage } from "@/lib/studio/media";
-import type { Grade, NormRect, Region, Source } from "@/lib/studio/types";
+import type { FrameStyle, Grade, NormRect, Region, Source } from "@/lib/studio/types";
 import { Button, formatClock } from "@/components/studio/ui";
 
 export type Guide = {
@@ -24,6 +24,11 @@ export function Stage({
   grade,
   nudge,
   regions,
+  regionAssets = {},
+  style,
+  cutoutDraft,
+  doodleDraft,
+  previewVersion = 0,
   guides = [],
   draft,
   marked,
@@ -41,6 +46,11 @@ export function Stage({
   grade: Grade | null;
   nudge: { dx: number; dy: number } | null;
   regions: Region[];
+  regionAssets?: Record<string, string>;
+  style?: FrameStyle | null;
+  cutoutDraft?: HTMLCanvasElement | null;
+  doodleDraft?: HTMLCanvasElement | null;
+  previewVersion?: number;
   guides?: Guide[];
   draft?: NormRect | null;
   marked?: boolean[];
@@ -115,12 +125,19 @@ export function Stage({
       try {
         const base = await loadImage(baseUrl);
         const replacement = replacementUrl ? await loadImage(replacementUrl) : null;
+        const assets = Object.fromEntries(await Promise.all(
+          Object.entries(regionAssets).map(async ([id, url]) => [id, await loadImage(url)] as const),
+        ));
         if (cancelled) return;
         renderFrame(ctx, base, source.width, source.height, {
           grade,
           replacement,
           nudge,
           regions,
+          assets,
+          style,
+          cutoutDraft,
+          doodleDraft,
         });
         ctx.setLineDash([]);
         for (const guide of guides) {
@@ -150,7 +167,7 @@ export function Stage({
     return () => {
       cancelled = true;
     };
-  }, [baseUrl, replacementUrl, grade, nudge, regions, guides, draft, source.width, source.height]);
+  }, [baseUrl, replacementUrl, grade, nudge, regions, regionAssets, style, cutoutDraft, doodleDraft, previewVersion, guides, draft, source.width, source.height]);
 
   function pointer(phase: "down" | "move" | "up", event: React.PointerEvent<HTMLCanvasElement>) {
     if (!onPointer) return;

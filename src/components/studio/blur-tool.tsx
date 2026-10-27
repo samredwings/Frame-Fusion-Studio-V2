@@ -11,6 +11,7 @@ export function BlurTool({
   urls,
   frameIndex,
   replacements,
+  regionAssets,
   playing,
   onSeek,
   onToggle,
@@ -20,6 +21,7 @@ export function BlurTool({
   urls: string[];
   frameIndex: number;
   replacements: Record<number, string>;
+  regionAssets: Record<string, string>;
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
@@ -39,6 +41,7 @@ export function BlurTool({
   const anchor = useRef<{ x: number; y: number } | null>(null);
   const nudge = edits.find((edit) => edit.sourceId === source.id && edit.frameIndex === frameIndex && edit.kind === "nudge");
   const grade = edits.find((edit) => edit.sourceId === source.id && edit.frameIndex === frameIndex && edit.kind === "grade");
+  const style = edits.find((edit) => edit.sourceId === source.id && edit.frameIndex === frameIndex && edit.kind === "style");
 
   function onPointer(event: { phase: "down" | "move" | "up"; x: number; y: number }) {
     if (event.phase === "down") {
@@ -82,8 +85,10 @@ export function BlurTool({
           frameIndex={frameIndex}
           replacementUrl={replacements[frameIndex]}
           grade={grade && grade.kind === "grade" ? grade.grade : null}
+          style={style && style.kind === "style" ? style.style : null}
           nudge={nudge && nudge.kind === "nudge" ? { dx: nudge.dx, dy: nudge.dy } : null}
           regions={visible}
+          regionAssets={regionAssets}
           draft={draft}
           playing={playing}
           onSeek={onSeek}

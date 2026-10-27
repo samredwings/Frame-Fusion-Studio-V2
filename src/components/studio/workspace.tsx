@@ -11,7 +11,7 @@ import { ExportTool } from "@/components/studio/export-tool";
 import { FaceTool } from "@/components/studio/face-tool";
 import { FrameTool } from "@/components/studio/frame-tool";
 import type { FrameAction } from "@/components/studio/stage";
-import { useBaseFrames, useReplacements } from "@/components/studio/use-frames";
+import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
 import { Button, Select } from "@/components/studio/ui";
 
 const toolMeta: Record<ToolId, { label: string; Icon: LucideIcon }> = {
@@ -36,6 +36,7 @@ export function Workspace({
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
   const edits = useStudio((state) => state.edits);
+  const regions = useStudio((state) => state.regions);
   const importVideo = useStudio((state) => state.importVideo);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const deleteFrame = useStudio((state) => state.deleteFrame);
@@ -44,6 +45,7 @@ export function Workspace({
   const source = mine.find((item) => item.id === sourceId) ?? mine.find((item) => item.role === "primary") ?? mine[0];
   const { urls, loading } = useBaseFrames(source);
   const replacements = useReplacements(source?.id, edits);
+  const regionAssets = useRegionAssets(source?.id, regions);
   const [frameIndex, setFrameIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(24);
@@ -287,11 +289,11 @@ export function Workspace({
             <p className="m-auto text-sm text-muted" role="status">Preparing frame rail…</p>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
-              {tool === "frames" ? <FrameTool source={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} previewRef={previewRef} editorOpen={editOpen} onCloseEditor={() => setEditOpen(false)} onOpenTools={() => { setEditOpen(false); setToolsOpen(true); }} /> : null}
+              {tool === "frames" ? <FrameTool source={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} previewRef={previewRef} editorOpen={editOpen} onCloseEditor={() => setEditOpen(false)} onOpenTools={() => { setEditOpen(false); setToolsOpen(true); }} regionAssets={regionAssets} onOpenPortrait={() => { setEditOpen(false); openTool("faces"); }} /> : null}
               {tool === "compare" ? <CompareTool sources={mine} primary={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} onSeek={setFrameIndex} /> : null}
-              {tool === "blur" ? <BlurTool source={source} urls={urls} replacements={replacements} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
-              {tool === "faces" ? <FaceTool source={source} urls={urls} replacements={replacements} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
-              {tool === "export" ? <ExportTool source={source} urls={urls} replacements={replacements} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
+              {tool === "blur" ? <BlurTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
+              {tool === "faces" ? <FaceTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
+              {tool === "export" ? <ExportTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
             </div>
           )}
         </main>

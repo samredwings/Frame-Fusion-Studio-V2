@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { frameKey, idbGet } from "@/lib/studio/idb";
-import type { FrameEdit, Source } from "@/lib/studio/types";
+import type { FrameEdit, Region, Source } from "@/lib/studio/types";
 
 export function useBaseFrames(source: Source | undefined) {
   const [urls, setUrls] = useState<string[]>([]);
@@ -86,6 +86,47 @@ export function useReplacements(sourceId: string | undefined, edits: FrameEdit[]
       created.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [sourceId, signature]);
+
+  return urls;
+}
+
+export function useRegionAssets(sourceId: string | undefined, regions: Region[]) {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const signature = regions
+    .filter((region) => region.sourceId === sourceId && region.blobKey)
+    .map((region) => `${region.id}:${region.blobKey}`)
+    .sort()
+    .join("|");
+
+  useEffect(() => {
+    if (!sourceId || !signature) {
+      setUrls({});
+      return;
+    }
+    let cancelled = false;
+    const created: string[] = [];
+    void (async () => {
+      const next: Record<string, string> = {};
+      const assets = regions.filter((region) => region.sourceId === sourceId && region.blobKey);
+      const blobs = await Promise.all(assets.map((region) => idbGet<Blob>("blobs", region.blobKey as string)));
+      assets.forEach((region, index) => {
+        const blob = blobs[index];
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        created.push(url);
+        next[region.id] = url;
+      });
+      if (cancelled) {
+        created.forEach((url) => URL.revokeObjectURL(url));
+        return;
+      }
+      setUrls(next);
+    })();
+    return () => {
+      cancelled = true;
+      created.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [sourceId, signature, regions]);
 
   return urls;
 }

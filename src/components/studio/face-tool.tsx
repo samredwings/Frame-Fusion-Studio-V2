@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { measureDrift, suggestLock, type DriftPoint } from "@/lib/studio/draw";
-import { loadImage } from "@/lib/studio/media";
+import { activeRegions, loadImage } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
 import type { NormRect, Source } from "@/lib/studio/types";
 import { Stage, type FrameAction, type Guide } from "@/components/studio/stage";
@@ -11,6 +11,7 @@ export function FaceTool({
   urls,
   frameIndex,
   replacements,
+  regionAssets,
   playing,
   onSeek,
   onToggle,
@@ -20,12 +21,14 @@ export function FaceTool({
   urls: string[];
   frameIndex: number;
   replacements: Record<number, string>;
+  regionAssets: Record<string, string>;
   playing: boolean;
   onSeek: (index: number) => void;
   onToggle: () => void;
   onFrameAction?: (action: FrameAction, index: number) => void;
 }) {
   const edits = useStudio((state) => state.edits);
+  const regions = useStudio((state) => state.regions);
   const setLock = useStudio((state) => state.setLock);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const [drift, setDrift] = useState<DriftPoint[]>([]);
@@ -34,6 +37,7 @@ export function FaceTool({
   const [draft, setDraft] = useState<NormRect | null>(null);
   const anchor = useRef<{ x: number; y: number } | null>(null);
   const nudge = edits.find((edit) => edit.sourceId === source.id && edit.kind === "nudge" && edit.frameIndex === frameIndex);
+  const style = edits.find((edit) => edit.sourceId === source.id && edit.kind === "style" && edit.frameIndex === frameIndex);
   const point = drift.find((item) => item.index === frameIndex);
   const guides: Guide[] = [];
   if (source.lock) {
@@ -160,7 +164,9 @@ export function FaceTool({
           replacementUrl={replacements[frameIndex]}
           grade={null}
           nudge={nudge && nudge.kind === "nudge" ? { dx: nudge.dx, dy: nudge.dy } : null}
-          regions={[]}
+          regions={activeRegions(regions, source.id, frameIndex)}
+          regionAssets={regionAssets}
+          style={style && style.kind === "style" ? style.style : null}
           guides={guides}
           draft={draft}
           onPointer={onLockPointer}

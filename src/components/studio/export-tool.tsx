@@ -5,7 +5,7 @@ import { idbGet } from "@/lib/studio/idb";
 import { downloadOrShareBlob } from "@/lib/studio/download";
 import { activeRegions, loadImage, recordFrames } from "@/lib/studio/media";
 import { useStudio } from "@/lib/studio/store";
-import type { Grade, Source } from "@/lib/studio/types";
+import { DEFAULT_FRAME_STYLE, type FrameStyle, type Grade, type Source } from "@/lib/studio/types";
 import { Stage, type FrameAction } from "@/components/studio/stage";
 import { Button, formatBytes } from "@/components/studio/ui";
 
@@ -15,6 +15,7 @@ export function ExportTool({
   source,
   urls,
   replacements,
+  regionAssets,
   frameIndex,
   playing,
   onSeek,
@@ -24,6 +25,7 @@ export function ExportTool({
   source: Source;
   urls: string[];
   replacements: Record<number, string>;
+  regionAssets: Record<string, string>;
   frameIndex: number;
   playing: boolean;
   onSeek: (index: number) => void;
@@ -43,6 +45,8 @@ export function ExportTool({
   const nudge = edits.find((edit) => edit.sourceId === source.id && edit.kind === "nudge" && edit.frameIndex === frameIndex);
   const gradeEdit = edits.find((edit) => edit.sourceId === source.id && edit.kind === "grade" && edit.frameIndex === frameIndex);
   const grade = gradeEdit && gradeEdit.kind === "grade" ? gradeEdit.grade : null;
+  const styleEdit = edits.find((edit) => edit.sourceId === source.id && edit.kind === "style" && edit.frameIndex === frameIndex);
+  const style = styleEdit && styleEdit.kind === "style" ? styleEdit.style : DEFAULT_FRAME_STYLE;
 
   async function render() {
     setRunning(true);
@@ -52,13 +56,17 @@ export function ExportTool({
       const maxEdge = quality === "draft" ? 480 : quality === "standard" ? 720 : Math.max(source.width, source.height);
       const size = evenSize(source.width, source.height, maxEdge);
       const bases = await Promise.all(urls.map((url) => loadImage(url)));
+      const loadedAssets = await Promise.all(Object.entries(regionAssets).map(async ([id, url]) => [id, await loadImage(url)] as const));
+      const assets = Object.fromEntries(loadedAssets);
       const repl = await Promise.all(
         urls.map(async (_url, index) => (replacements[index] ? loadImage(replacements[index]) : null)),
       );
       const blob = await recordFrames(bases, repl, size.width, size.height, source.fps, (ctx, index, base, replacement) => {
         const gradeFor = edits.find((edit) => edit.sourceId === source.id && edit.kind === "grade" && edit.frameIndex === index);
         const nudgeFor = edits.find((edit) => edit.sourceId === source.id && edit.kind === "nudge" && edit.frameIndex === index);
+        const styleFor = edits.find((edit) => edit.sourceId === source.id && edit.kind === "style" && edit.frameIndex === index);
         const applied: Grade | null = gradeFor && gradeFor.kind === "grade" ? gradeFor.grade : null;
+        const appliedStyle: FrameStyle = styleFor && styleFor.kind === "style" ? styleFor.style : DEFAULT_FRAME_STYLE;
         const off = document.createElement("canvas");
         off.width = source.width;
         off.height = source.height;
@@ -69,6 +77,8 @@ export function ExportTool({
           replacement,
           nudge: nudgeFor && nudgeFor.kind === "nudge" ? { dx: nudgeFor.dx, dy: nudgeFor.dy } : null,
           regions: activeRegions(regions, source.id, index),
+          assets,
+          style: appliedStyle,
         });
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, size.width, size.height);
@@ -121,8 +131,10 @@ export function ExportTool({
           frameIndex={frameIndex}
           replacementUrl={replacements[frameIndex]}
           grade={grade}
+          style={style}
           nudge={nudge && nudge.kind === "nudge" ? { dx: nudge.dx, dy: nudge.dy } : null}
           regions={activeRegions(regions, source.id, frameIndex)}
+          regionAssets={regionAssets}
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}

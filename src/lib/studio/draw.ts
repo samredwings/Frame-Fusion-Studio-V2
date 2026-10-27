@@ -1,5 +1,5 @@
-import type { Grade, NormRect, Region } from "@/lib/studio/types";
-import { NEUTRAL_GRADE } from "@/lib/studio/types";
+import type { FrameStyle, Grade, NormRect, Region } from "@/lib/studio/types";
+import { DEFAULT_FRAME_STYLE, NEUTRAL_GRADE } from "@/lib/studio/types";
 
 export type DriftPoint = { index: number; score: number; cx: number; cy: number };
 
@@ -97,16 +97,38 @@ export function renderFrame(
     replacement: CanvasImageSource | null;
     nudge: { dx: number; dy: number } | null;
     regions: Region[];
+    assets?: Record<string, CanvasImageSource>;
+    style?: FrameStyle | null;
+    cutoutDraft?: CanvasImageSource | null;
+    doodleDraft?: CanvasImageSource | null;
   },
 ) {
   const image = fx.replacement ?? base;
   const dx = fx.nudge?.dx ?? 0;
   const dy = fx.nudge?.dy ?? 0;
+  const style = fx.style ?? DEFAULT_FRAME_STYLE;
   const { canvas, ctx: off } = canvas2d(width, height, "composed");
-  off.fillStyle = "#101317";
+  off.fillStyle = style.backgroundColor || "#101317";
   off.fillRect(0, 0, width, height);
   off.filter = fx.grade ? gradeFilter(fx.grade) : "none";
-  off.drawImage(image, dx, dy, width, height);
+  const imageSize = image as CanvasImageSource & { width?: number; naturalWidth?: number; height?: number; naturalHeight?: number };
+  const imageWidth = imageSize.naturalWidth || imageSize.width || width;
+  const imageHeight = imageSize.naturalHeight || imageSize.height || height;
+  const crop = style.crop;
+  const sx = crop ? crop.x * imageWidth : 0;
+  const sy = crop ? crop.y * imageHeight : 0;
+  const sw = crop ? crop.w * imageWidth : imageWidth;
+  const sh = crop ? crop.h * imageHeight : imageHeight;
+  const rotation = style.rotation * Math.PI / 180;
+  if (rotation) {
+    off.save();
+    off.translate(width / 2 + dx, height / 2 + dy);
+    off.rotate(rotation);
+    off.drawImage(image, sx, sy, sw, sh, -width / 2, -height / 2, width, height);
+    off.restore();
+  } else {
+    off.drawImage(image, sx, sy, sw, sh, dx, dy, width, height);
+  }
   off.filter = "none";
   if (fx.grade && fx.grade.warmth !== 0) {
     off.save();
@@ -117,13 +139,74 @@ export function renderFrame(
     off.restore();
   }
 
+  for (const region of fx.regions) {
+    if (region.kind !== "cutout") continue;
+    const mask = fx.assets?.[region.id];
+    if (!mask) continue;
+    off.save();
+    off.globalCompositeOperation = "destination-out";
+    off.drawImage(mask, 0, 0, width, height);
+    off.restore();
+  }
+  if (fx.cutoutDraft) {
+    off.save();
+    off.globalCompositeOperation = "destination-out";
+    off.drawImage(fx.cutoutDraft, 0, 0, width, height);
+    off.restore();
+  }
+
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.filter = "none";
   ctx.globalAlpha = 1;
   ctx.clearRect(0, 0, width, height);
   ctx.drawImage(canvas, 0, 0);
 
-  for (const region of fx.regions) paintRegion(ctx, canvas, region, width, height);
+  for (const region of fx.regions) {
+    if (region.kind === "cutout") continue;
+    if (region.kind === "pip" || region.kind === "doodle") {
+      const asset = fx.assets?.[region.id];
+      if (!asset) continue;
+      const x = region.x * width;
+      const y = region.y * height;
+      const rw = Math.max(1, region.w * width);
+      const rh = Math.max(1, region.h * height);
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, Math.max(0.05, region.amount / 100));
+      if (region.kind === "pip") {
+        const size = asset as CanvasImageSource & { width?: number; naturalWidth?: number; height?: number; naturalHeight?: number };
+        const iw = size.naturalWidth || size.width || rw;
+        const ih = size.naturalHeight || size.height || rh;
+        const scale = Math.min(rw / iw, rh / ih);
+        const dw = iw * scale;
+        const dh = ih * scale;
+        ctx.drawImage(asset, x + (rw - dw) / 2, y + (rh - dh) / 2, dw, dh);
+      } else {
+        ctx.drawImage(asset, x, y, rw, rh);
+      }
+      ctx.restore();
+      continue;
+    }
+    paintRegion(ctx, canvas, region, width, height);
+  }
+  if (fx.doodleDraft) ctx.drawImage(fx.doodleDraft, 0, 0, width, height);
+
+  if (style.frameColor) {
+    ctx.save();
+    ctx.strokeStyle = style.frameColor;
+    ctx.lineWidth = Math.max(1, style.frameWidth * Math.min(width, height));
+    ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, width - ctx.lineWidth, height - ctx.lineWidth);
+    ctx.restore();
+  }
+  if (style.text?.text) {
+    ctx.save();
+    ctx.fillStyle = style.text.color;
+    ctx.font = `600 ${Math.max(12, style.text.size * width)}px system-ui, sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "rgba(0,0,0,.75)";
+    ctx.shadowBlur = 5;
+    ctx.fillText(style.text.text, style.text.x * width, style.text.y * height, width * 0.9);
+    ctx.restore();
+  }
 }
 
 export function paintDemoFrame(
@@ -208,7 +291,7 @@ export async function suggestLock(img: CanvasImageSource & { width?: number; nat
   const srcH = img.naturalHeight || img.height || 1;
   const w = 120;
   const h = Math.max(1, Math.round((srcH / srcW) * w));
-  const { canvas, ctx } = canvas2d(w, h, "scratch");
+  const { ctx } = canvas2d(w, h, "scratch");
   ctx.drawImage(img, 0, 0, w, h);
   const data = ctx.getImageData(0, 0, w, h).data;
   let minX = w;
@@ -243,7 +326,7 @@ export async function suggestLock(img: CanvasImageSource & { width?: number; nat
 
 function downsampleGray(img: CanvasImageSource, width: number, srcW: number, srcH: number): Gray {
   const height = Math.max(1, Math.round((srcH / srcW) * width));
-  const { canvas, ctx } = canvas2d(width, height, "scratch");
+  const { ctx } = canvas2d(width, height, "scratch");
   ctx.drawImage(img, 0, 0, width, height);
   const pixels = ctx.getImageData(0, 0, width, height).data;
   const data = new Uint8ClampedArray(width * height);

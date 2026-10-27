@@ -27,7 +27,7 @@ type StudioState = {
   upsertEdit: (edit: FrameEdit) => Promise<void>;
   clearFrame: (sourceId: string, frameIndex: number) => Promise<void>;
   addRegion: (region: Region) => Promise<void>;
-  updateRegion: (id: string, patch: Partial<Pick<Region, "label" | "kind" | "amount" | "frameIn" | "frameOut">>) => Promise<void>;
+  updateRegion: (id: string, patch: Partial<Pick<Region, "label" | "kind" | "amount" | "frameIn" | "frameOut" | "x" | "y" | "w" | "h" | "blobKey">>) => Promise<void>;
   deleteRegion: (id: string) => Promise<void>;
   saveExport: (item: ExportItem, blob: Blob) => Promise<void>;
   deleteExport: (id: string) => Promise<void>;
@@ -119,7 +119,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   deleteProject: async (id) => {
     const sources = get().sources.filter((source) => source.projectId === id);
     for (const source of sources) await dropSourceMedia(source, get().edits, get().exports);
-    for (const region of get().regions) if (region.projectId === id) await idbDel("regions", region.id);
+    for (const region of get().regions) {
+      if (region.projectId !== id) continue;
+      if (region.blobKey) await idbDel("blobs", region.blobKey);
+      await idbDel("regions", region.id);
+    }
     await idbDel("projects", id);
     set({
       projects: get().projects.filter((project) => project.id !== id),
@@ -211,7 +215,11 @@ export const useStudio = create<StudioState>((set, get) => ({
     const source = get().sources.find((item) => item.id === id);
     if (!source) return;
     await dropSourceMedia(source, get().edits, get().exports);
-    for (const region of get().regions) if (region.sourceId === id) await idbDel("regions", region.id);
+    for (const region of get().regions) {
+      if (region.sourceId !== id) continue;
+      if (region.blobKey) await idbDel("blobs", region.blobKey);
+      await idbDel("regions", region.id);
+    }
     await idbDel("sources", id);
     set({
       sources: get().sources.filter((item) => item.id !== id),
@@ -259,6 +267,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         const next = { ...region, frameOut: region.frameOut - 1 };
         if (next.frameIn > next.frameOut) {
           operations.push({ kind: "delete", store: "regions", key: region.id });
+          if (region.blobKey) operations.push({ kind: "delete", store: "blobs", key: region.blobKey });
           deletedRegionIds.add(region.id);
         } else updatedRegions.set(region.id, next);
       }
@@ -331,9 +340,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (!current) return;
     const next: Region = { ...current, ...patch };
     await idbPut("regions", id, next);
+    if (patch.blobKey && current.blobKey && current.blobKey !== patch.blobKey) await idbDel("blobs", current.blobKey);
     set({ regions: get().regions.map((region) => (region.id === id ? next : region)) });
   },
   deleteRegion: async (id) => {
+    const region = get().regions.find((item) => item.id === id);
+    if (region?.blobKey) await idbDel("blobs", region.blobKey);
     await idbDel("regions", id);
     set({ regions: get().regions.filter((region) => region.id !== id) });
   },
