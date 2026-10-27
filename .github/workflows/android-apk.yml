@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - "android-release-*"
+      - main
+      - "android-release-v*"
     tags:
       - "android-v*"
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -41,14 +45,48 @@ jobs:
       - name: Install packages
         run: npm install --no-audit --no-fund
 
+      - name: Type-check project
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
+
       - name: Enable Gradle wrapper
         run: chmod +x android/gradlew
 
       - name: Build offline web bundle
         run: npm run android:sync
 
+      - name: Resolve Android release version
+        id: release_meta
+        if: startsWith(github.ref, 'refs/tags/android-v') || startsWith(github.ref, 'refs/heads/android-release-v')
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="android-${GITHUB_REF_NAME#android-release-}"
+          fi
+          version="${tag#android-v}"
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Expected a semantic version such as android-v1.0.1; got: $tag" >&2
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$version"
+          version_code=$((major * 1000000 + minor * 1000 + patch))
+          if (( version_code > 2100000000 )); then
+            echo "Version code exceeds Android's supported limit: $version_code" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
+
       - name: Build debug APK
-        run: cd android && ./gradlew assembleDebug
+        env:
+          ANDROID_VERSION_NAME: ${{ steps.release_meta.outputs.version || '1.0' }}
+          ANDROID_VERSION_CODE: ${{ steps.release_meta.outputs.version_code || '1' }}
+        run: cd android && ./gradlew assembleDebug -PVERSION_NAME="$ANDROID_VERSION_NAME" -PVERSION_CODE="$ANDROID_VERSION_CODE"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -58,12 +96,12 @@ jobs:
           if-no-files-found: error
 
       - name: Publish debug APK release
-        if: startsWith(github.ref, 'refs/tags/android-v') || github.ref == 'refs/heads/android-release-v1.0.1'
+        if: steps.release_meta.outputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          name: Frame Fusion Studio android-v1.0.1
-          tag_name: android-v1.0.1
-          target_commitish: android-release-v1.0.1
+          name: Frame Fusion Studio ${{ steps.release_meta.outputs.tag }}
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           body: |
             Installable Android debug APK built from the offline app bundle.
 
