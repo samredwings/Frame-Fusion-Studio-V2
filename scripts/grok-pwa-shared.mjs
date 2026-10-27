@@ -519,7 +519,10 @@ export function createHeadInjector(ctx = {}) {
       creator: normalized.creator,
       creatorId: normalized.creatorId,
       host: normalized.host,
-      cwd: normalized.cwd,
+      // Preserve whether the caller intentionally supplied a workspace root.
+      // Passing normalized.cwd here would make every generic stream injector
+      // accidentally load the current repository's site.json.
+      cwd: ctx.cwd,
       site: normalized.site,
     });
 
