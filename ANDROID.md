@@ -20,7 +20,8 @@ The Android project is included in the repository. The installable debug APK is 
 
 To build in GitHub Actions, run **Build Android APK** from the Actions page.
 The finished APK is available as the `frame-fusion-studio-android` workflow
-artifact. Pushing a tag matching `android-v*` runs the same build.
+artifact. Pushing a tag matching `android-v*` also publishes a GitHub prerelease
+with the debug APK attached.
 
 ## App updates
 
