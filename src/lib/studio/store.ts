@@ -179,7 +179,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         await idbPut("projects", project.id, next);
         set({ projects: get().projects.map((item) => (item.id === project.id ? next : item)) });
       }
-      set({ sources: [...get().sources, source], busy: null, notice: `Imported ${extracted.frames.length} frames from ${file.name}.` });
+      set({ sources: [...get().sources, source], busy: null, notice: `Imported ${extracted.frames.length} frames (${extracted.duration.toFixed(1)}s captured) from ${file.name}.` });
       return id;
     } catch (error) {
       for (let i = 0; i < 48; i++) await idbDel("blobs", frameKey(id, i)).catch(() => undefined);
