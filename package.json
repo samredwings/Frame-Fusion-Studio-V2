@@ -12,7 +12,7 @@
     "build:android:web": "cross-env CAPACITOR_BUILD=1 VITE_GROK_EXTENSIONS=0 npm run build",
     "android:init": "cap add android",
     "android:sync": "npm run build:android:web && cap sync android",
-    "android:apk": "npm run android:sync && cd android && gradlew assembleDebug",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug",
     "db:migrate": "node scripts/migrate.mjs",
     "build:dev": "node scripts/with-app-env.mjs vite build --mode development",
     "preview": "node scripts/with-app-env.mjs vite preview",
