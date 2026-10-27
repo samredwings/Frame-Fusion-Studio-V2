@@ -329,6 +329,14 @@ export function siteHasCustomCard(site = {}) {
  * Otherwise empty — caller emits the og.grok.me placeholder.
  */
 export function resolveOgCardAsset(site = {}, cwd = process.cwd()) {
+  // A null cwd means this is a pure helper call, not a workspace-backed build.
+  // Honor a supplied/baked custom-card declaration, but do not inspect whichever
+  // filesystem happens to be the caller's current working directory.
+  if (cwd === null) {
+    return siteHasCustomCard(site) || Boolean(String(site.image ?? "").trim())
+      ? String(site.image ?? "").trim() || "/og.jpg"
+      : "";
+  }
   return ogCardPublicPath(cwd) || (detectCustomOgCard(cwd, site) ? String(site.image ?? "").trim() || "/og.jpg" : "");
 }
 
@@ -424,14 +432,14 @@ export function normalizeHeadContext(ctx = {}) {
   // stay isolated from whichever project's files happen to be process.cwd();
   // this keeps unit tests and generic consumers from inheriting repository
   // metadata accidentally.
-  const site = applyCustomCardFromFs(
-    ctx.site !== undefined
+  const site = ctx.cwd !== undefined
+    ? applyCustomCardFromFs(
+        ctx.site !== undefined ? ctx.site : snapshotOgIdentity(cwd).site,
+        cwd,
+      )
+    : ctx.site !== undefined
       ? ctx.site
-      : ctx.cwd !== undefined
-        ? snapshotOgIdentity(cwd).site
-        : {},
-    cwd,
-  );
+      : {};
   const appName = resolveOgTitle(site, ctx.appName ?? DEFAULT_APP_NAME, ctx.host ?? "");
   return {
     appName,
@@ -467,7 +475,14 @@ export function injectGrokPwaHead(html, ctx = {}) {
 
   next = insertAfterHeadOpen(
     next,
-    grokOgHeadTags({ host, appName, site, documentTitle, cwd }).join(""),
+    grokOgHeadTags({
+      host,
+      appName,
+      site,
+      documentTitle,
+      // Only access workspace files when the caller explicitly supplied cwd.
+      cwd: ctx.cwd !== undefined ? cwd : null,
+    }).join(""),
   );
 
   if (readGrokExtensionsEnabled() && !next.includes("/grok-app-builder/extensions.js")) {
