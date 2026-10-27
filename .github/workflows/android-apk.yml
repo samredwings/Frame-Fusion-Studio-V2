@@ -44,8 +44,11 @@ jobs:
       - name: Enable Gradle wrapper
         run: chmod +x android/gradlew
 
-      - name: Build offline Android APK
-        run: npm run android:apk
+      - name: Build offline web bundle
+        run: npm run android:sync
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
