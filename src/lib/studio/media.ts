@@ -3,6 +3,7 @@ import { renderFrame } from "@/lib/studio/draw";
 import type { Grade, Region } from "@/lib/studio/types";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
+const MEDIA_WAIT_TIMEOUT_MS = 15_000;
 
 export function loadImage(src: string): Promise<HTMLImageElement> {
   const hit = imageCache.get(src);
@@ -26,7 +27,34 @@ export function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: 
   });
 }
 
-function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
+function waitForMediaState(video: HTMLVideoElement, readyState: number, events: string[], message: string): Promise<void> {
+  if (video.readyState >= readyState) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(message));
+    }, MEDIA_WAIT_TIMEOUT_MS);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      for (const event of events) video.removeEventListener(event, check);
+      video.removeEventListener("error", onError);
+    };
+    const check = () => {
+      if (video.readyState < readyState) return;
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("This browser could not read that video."));
+    };
+    for (const event of events) video.addEventListener(event, check);
+    video.addEventListener("error", onError);
+    check();
+  });
+}
+
+async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const limit = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.04) : time;
     const t = Math.max(0, Math.min(time, limit));
@@ -34,13 +62,24 @@ function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
       resolve();
       return;
     }
+    if (Math.abs(video.currentTime - t) < 0.001) {
+      void waitForMediaState(video, 2, ["loadeddata", "canplay"], "This browser timed out while decoding that video.")
+        .then(resolve, reject);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("This browser timed out while seeking inside that video."));
+    }, MEDIA_WAIT_TIMEOUT_MS);
     const cleanup = () => {
+      window.clearTimeout(timeout);
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("error", onError);
     };
     const onSeeked = () => {
       cleanup();
-      resolve();
+      void waitForMediaState(video, 2, ["loadeddata", "canplay"], "This browser timed out while decoding that video.")
+        .then(resolve, reject);
     };
     const onError = () => {
       cleanup();
@@ -73,12 +112,12 @@ export async function extractVideoFrames(
   video.preload = "auto";
   video.src = url;
   try {
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error("This browser could not read that video."));
-    });
-    await video.play().catch(() => undefined);
-    video.pause();
+    await waitForMediaState(
+      video,
+      1,
+      ["loadedmetadata", "loadeddata", "canplay"],
+      "This browser timed out while reading that video.",
+    );
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
     if (!video.videoWidth || !video.videoHeight || duration <= 0) {
       throw new Error("That file has no playable picture.");
@@ -167,6 +206,9 @@ export async function recordFrames(
   canvas.style.left = "-9999px";
   canvas.style.top = "0";
   document.body.appendChild(canvas);
+  let stream: MediaStream | null = null;
+  let recorder: MediaRecorder | null = null;
+  let stopped: Promise<void> | null = null;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     canvas.remove();
@@ -176,17 +218,18 @@ export async function recordFrames(
     const first = frames[0];
     if (!first) throw new Error("Nothing to export.");
     paint(ctx, 0, first, replacements[0] ?? null);
-    const stream = canvas.captureStream(fps);
-    const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: width >= 900 ? 5_000_000 : 2_400_000 });
+    stream = canvas.captureStream(fps);
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: width >= 900 ? 5_000_000 : 2_400_000 });
     const chunks: Blob[] = [];
-    rec.ondataavailable = (event) => {
+    recorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data);
     };
-    const stopped = new Promise<void>((resolve, reject) => {
-      rec.onstop = () => resolve();
-      rec.onerror = () => reject(new Error("Recording failed."));
+    stopped = new Promise<void>((resolve, reject) => {
+      if (!recorder) return reject(new Error("Could not start the recorder."));
+      recorder.onstop = () => resolve();
+      recorder.onerror = () => reject(new Error("Recording failed."));
     });
-    rec.start();
+    recorder.start();
     for (let i = 0; i < frames.length; i++) {
       const frame = frames[i];
       if (!frame) continue;
@@ -194,13 +237,21 @@ export async function recordFrames(
       onProgress(i + 1);
       await new Promise((resolve) => setTimeout(resolve, Math.round(1000 / fps)));
     }
-    rec.stop();
+    recorder.stop();
     await stopped;
-    stream.getTracks().forEach((track) => track.stop());
     const blob = new Blob(chunks, { type: "video/webm" });
     if (!blob.size) throw new Error("The recorder returned an empty file.");
     return blob;
   } finally {
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        // The recorder may already be stopping after a platform error.
+      }
+      await stopped?.catch(() => undefined);
+    }
+    stream?.getTracks().forEach((track) => track.stop());
     canvas.remove();
   }
 }

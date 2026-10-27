@@ -20,18 +20,26 @@ function toBase64(blob: Blob): Promise<string> {
 
 export async function downloadOrShareBlob(blob: Blob, filename: string): Promise<void> {
   if (Capacitor.isNativePlatform()) {
-    const path = `${Date.now()}-${filename}`;
+    const safeFilename =
+      Array.from(filename, (character) =>
+        character.charCodeAt(0) < 32 || '\\/:*?"<>|'.includes(character) ? "_" : character,
+      ).join("").trim() || "export";
+    const path = `${Date.now()}-${safeFilename}`;
     const file = await Filesystem.writeFile({
       path,
       data: await toBase64(blob),
       directory: Directory.Cache,
       recursive: false,
     });
-    await Share.share({
-      title: filename,
-      dialogTitle: "Save or share your export",
-      files: [file.uri],
-    });
+    try {
+      await Share.share({
+        title: safeFilename,
+        dialogTitle: "Save or share your export",
+        files: [file.uri],
+      });
+    } finally {
+      await Filesystem.deleteFile({ path, directory: Directory.Cache }).catch(() => undefined);
+    }
     return;
   }
 

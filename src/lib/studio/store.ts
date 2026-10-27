@@ -183,6 +183,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       return id;
     } catch (error) {
       for (let i = 0; i < 48; i++) await idbDel("blobs", frameKey(id, i)).catch(() => undefined);
+      await idbDel("sources", id).catch(() => undefined);
       const message = error instanceof Error ? error.message : "Import failed.";
       set({ busy: null, error: message });
       throw error;
@@ -250,8 +251,13 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   saveExport: async (item, blob) => {
     await idbPut("blobs", item.blobKey, blob);
-    await idbPut("exports", item.id, item);
-    set({ exports: [item, ...get().exports], notice: `Saved ${item.filename}.` });
+    try {
+      await idbPut("exports", item.id, item);
+      set({ exports: [item, ...get().exports], notice: `Saved ${item.filename}.` });
+    } catch (error) {
+      await idbDel("blobs", item.blobKey).catch(() => undefined);
+      throw error;
+    }
   },
   deleteExport: async (id) => {
     const item = get().exports.find((entry) => entry.id === id);
