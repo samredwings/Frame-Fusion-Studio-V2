@@ -48,6 +48,7 @@ export function Workspace({
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(24);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const frameImageRef = useRef<HTMLInputElement>(null);
@@ -66,7 +67,20 @@ export function Workspace({
   useEffect(() => {
     setFrameIndex(0);
     setPlaying(false);
+    setEditOpen(false);
   }, [source?.id]);
+
+  useEffect(() => {
+    if (!editOpen && !toolsOpen) return;
+    function closePanels(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setEditOpen(false);
+        setToolsOpen(false);
+      }
+    }
+    window.addEventListener("keydown", closePanels);
+    return () => window.removeEventListener("keydown", closePanels);
+  }, [editOpen, toolsOpen]);
 
   useEffect(() => {
     if (!playing || !source?.frameCount) return;
@@ -78,6 +92,7 @@ export function Workspace({
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if (editOpen || toolsOpen) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
       if (!source) return;
@@ -101,7 +116,7 @@ export function Workspace({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [source, navigate, projectId]);
+  }, [source, navigate, projectId, editOpen, toolsOpen]);
 
   function openTool(next: ToolId) {
     void navigate({ to: "/projects/$projectId", params: { projectId }, search: { tool: next, source: source?.id } });
@@ -113,6 +128,8 @@ export function Workspace({
     if (action === "edit") {
       setFrameIndex(index);
       openTool("frames");
+      setToolsOpen(false);
+      setEditOpen(true);
       return;
     }
     if (action === "replace") {
@@ -270,7 +287,7 @@ export function Workspace({
             <p className="m-auto text-sm text-muted" role="status">Preparing frame rail…</p>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
-              {tool === "frames" ? <FrameTool source={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} previewRef={previewRef} /> : null}
+              {tool === "frames" ? <FrameTool source={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} previewRef={previewRef} editorOpen={editOpen} onCloseEditor={() => setEditOpen(false)} onOpenTools={() => { setEditOpen(false); setToolsOpen(true); }} /> : null}
               {tool === "compare" ? <CompareTool sources={mine} primary={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} onSeek={setFrameIndex} /> : null}
               {tool === "blur" ? <BlurTool source={source} urls={urls} replacements={replacements} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
               {tool === "faces" ? <FaceTool source={source} urls={urls} replacements={replacements} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
@@ -284,18 +301,27 @@ export function Workspace({
             <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted">Editing</p>
             <p className="truncate text-sm font-semibold">{toolMeta[tool].label}</p>
           </div>
-          <Button aria-expanded={toolsOpen} aria-haspopup="dialog" className="min-w-28 rounded-xl" onClick={() => setToolsOpen(true)}>
+          <Button
+            aria-expanded={editOpen}
+            aria-controls="frame-edit-drawer"
+            className="min-w-28 rounded-xl"
+            onClick={() => {
+              if (tool !== "frames") openTool("frames");
+              setToolsOpen(false);
+              setEditOpen((open) => tool === "frames" ? !open : true);
+            }}
+          >
             <SlidersHorizontal className="size-4" aria-hidden="true" />Edit
           </Button>
         </nav>
       </div>
       {toolsOpen ? (
         <div className="studio-sheet-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/65 px-3 pt-8" onClick={() => setToolsOpen(false)}>
-          <section role="dialog" aria-modal="true" aria-labelledby="edit-tools-title" className="studio-sheet w-full max-w-lg rounded-t-3xl p-4 sm:mb-4 sm:rounded-3xl sm:p-5" onClick={(event) => event.stopPropagation()}>
+          <section role="dialog" aria-modal="true" aria-labelledby="tool-picker-title" className="studio-sheet w-full max-w-lg rounded-t-3xl p-4 sm:mb-4 sm:rounded-3xl sm:p-5" onClick={(event) => event.stopPropagation()}>
             <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-line sm:hidden" />
             <div className="flex items-start justify-between gap-4">
-              <div><p className="studio-kicker">FRAME TOOLS</p><h2 id="edit-tools-title" className="mt-1 font-display text-2xl font-semibold">Edit</h2></div>
-              <button type="button" aria-label="Close edit tools" className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg" onClick={() => setToolsOpen(false)}><X className="size-4" aria-hidden="true" /></button>
+              <div><p className="studio-kicker">FRAME FUSION</p><h2 id="tool-picker-title" className="mt-1 font-display text-2xl font-semibold">Tools</h2></div>
+              <button type="button" aria-label="Close tool picker" className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg" onClick={() => setToolsOpen(false)}><X className="size-4" aria-hidden="true" /></button>
             </div>
             <div className="mt-3 grid gap-2">
               {TOOLS.map(({ id }) => {

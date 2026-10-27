@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Download, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Download, Grid2X2, RotateCcw, X } from "lucide-react";
 import { idbDel, idbPut } from "@/lib/studio/idb";
 import { downloadOrShareBlob } from "@/lib/studio/download";
 import { useStudio } from "@/lib/studio/store";
@@ -17,6 +17,9 @@ export function FrameTool({
   onToggle,
   onFrameAction,
   previewRef,
+  editorOpen,
+  onCloseEditor,
+  onOpenTools,
 }: {
   source: Source;
   urls: string[];
@@ -26,6 +29,9 @@ export function FrameTool({
   onToggle: () => void;
   onFrameAction?: (action: FrameAction, index: number) => void;
   previewRef: React.MutableRefObject<HTMLCanvasElement | null>;
+  editorOpen: boolean;
+  onCloseEditor: () => void;
+  onOpenTools: () => void;
 }) {
   const allEdits = useStudio((state) => state.edits);
   const edits = allEdits.filter((edit) => edit.sourceId === source.id);
@@ -36,12 +42,24 @@ export function FrameTool({
   const savedGrade = gradeEdit && gradeEdit.kind === "grade" ? gradeEdit.grade : NEUTRAL_GRADE;
   const savedKey = JSON.stringify(savedGrade);
   const [grade, setGrade] = useState<Grade>(savedGrade);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const replace = edits.find((edit) => edit.kind === "replace" && edit.frameIndex === frameIndex);
   const nudge = edits.find((edit) => edit.kind === "nudge" && edit.frameIndex === frameIndex);
 
   useEffect(() => {
     setGrade(JSON.parse(savedKey) as Grade);
   }, [savedKey, frameIndex]);
+
+  useEffect(() => {
+    if (editorOpen) {
+      previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      closeButtonRef.current?.focus();
+      return;
+    }
+    if (previousFocusRef.current?.isConnected) previousFocusRef.current.focus();
+    previousFocusRef.current = null;
+  }, [editorOpen]);
 
   const marked = useMemo(() => {
     const flags = Array.from({ length: source.frameCount }, () => false);
@@ -113,10 +131,28 @@ export function FrameTool({
           previewRef={previewRef}
         />
       </div>
-      <aside className="studio-inspector min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none">
-        <div>
-          <p className="studio-kicker">FRAME TOOLS <span className="text-line">/</span> {String(frameIndex + 1).padStart(2, "0")}</p>
-          <h2 className="mt-1 font-display text-lg font-semibold tracking-tight">Color &amp; finish</h2>
+      <aside
+        id="frame-edit-drawer"
+        className={`studio-inspector studio-frame-editor min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5 lg:w-80 lg:flex-none${editorOpen ? " studio-edit-drawer-open" : ""}`}
+        role="region"
+        aria-labelledby="frame-edit-title"
+      >
+        <div className="studio-edit-drawer-heading">
+          <div className="studio-edit-drawer-handle" aria-hidden="true" />
+          <div className="studio-edit-drawer-title-row">
+            <div>
+              <p className="studio-kicker">IMAGE EDITOR <span className="text-line">/</span> {String(frameIndex + 1).padStart(2, "0")}</p>
+              <h2 id="frame-edit-title" className="mt-1 font-display text-lg font-semibold tracking-tight">Adjust image</h2>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" className="studio-edit-drawer-tools" onClick={onOpenTools}>
+                <Grid2X2 className="size-4" aria-hidden="true" />Tools
+              </button>
+              <button ref={closeButtonRef} type="button" aria-label="Close image editor" className="studio-edit-drawer-close" onClick={onCloseEditor}>
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
           <p className="mt-1 text-sm leading-5 text-muted">Tune this frame, swap in a still, or save a clean PNG.</p>
         </div>
         <Slider label="Exposure" min={40} max={160} value={grade.brightness} suffix="%" onChange={(brightness) => setGrade({ ...grade, brightness })} />
