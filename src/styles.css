@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", "DM Sans", ui-sans-serif, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+
+  --color-bg: #101317;
+  --color-surface: #181c22;
+  --color-surface-2: #21262e;
+  --color-line: #2e3641;
+  --color-fg: #e7ebf0;
+  --color-muted: #93a0ae;
+  --color-amber: #e4a15a;
+  --color-amber-ink: #1c140c;
+  --color-cyan: #8fd0dc;
+  --color-cyan-dim: #1a3036;
+  --color-ok: #7dcaa0;
+  --color-danger: #e15d5d;
+  --color-danger-ink: #1a1010;
+
+  --radius-sm: 0.35rem;
+  --radius-md: 0.55rem;
+  --radius-lg: 0.85rem;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-amber);
+    outline-offset: 2px;
+  }
+
+  .stage-frame {
+    max-width: min(100%, calc(34dvh * var(--ratio, 1.77)));
+  }
+
+  @media (min-width: 1024px) {
+    .stage-frame {
+      max-width: min(100%, calc(62dvh * var(--ratio, 1.77)));
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

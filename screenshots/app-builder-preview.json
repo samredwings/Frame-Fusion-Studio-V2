@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Frame Fusion",
+      "hasCanvas": false,
+      "bodyTextLen": 222,
+      "bodyTextHash": "480e3ee16f1018299fc0f399758429cc93974b9736207c45c4e34df9c898fc3e",
+      "bodyTextPrefix": "Frame Fusion LOCAL BAY Projects Extract a reel, compare takes, p",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Frame Fusion",
+      "hasCanvas": false,
+      "bodyTextLen": 222,
+      "bodyTextHash": "480e3ee16f1018299fc0f399758429cc93974b9736207c45c4e34df9c898fc3e",
+      "bodyTextPrefix": "Frame Fusion LOCAL BAY Projects Extract a reel, compare takes, p",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
