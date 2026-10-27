@@ -63,6 +63,9 @@ export async function extractVideoFrames(
   maxFrames: number,
   onProgress: (done: number, total: number) => void,
 ): Promise<{ width: number; height: number; duration: number; frames: Blob[] }> {
+  if (!Number.isFinite(fps) || fps <= 0) throw new Error("Choose a frame rate greater than zero.");
+  if (!Number.isInteger(maxFrames) || maxFrames < 1) throw new Error("The frame limit must be a positive integer.");
+
   const url = URL.createObjectURL(file);
   const video = document.createElement("video");
   video.muted = true;
@@ -81,7 +84,9 @@ export async function extractVideoFrames(
       throw new Error("That file has no playable picture.");
     }
     const sized = evenSize(video.videoWidth, video.videoHeight, 960);
-    const count = Math.min(maxFrames, Math.max(1, Math.floor(duration * fps)));
+    // Keep the first sampled segment bounded. ceil() includes a final sample for
+    // non-integral durations; maxFrames caps long clips to a predictable workload.
+    const count = Math.min(maxFrames, Math.max(1, Math.ceil(duration * fps)));
     const canvas = document.createElement("canvas");
     canvas.width = sized.width;
     canvas.height = sized.height;
@@ -94,7 +99,11 @@ export async function extractVideoFrames(
       frames.push(await canvasToBlob(canvas, "image/jpeg", 0.84));
       onProgress(i + 1, count);
     }
-    return { width: sized.width, height: sized.height, duration, frames };
+    // Only the first count / fps seconds are represented by these frames. Store
+    // that processed duration rather than the full input duration, otherwise
+    // playback/export metadata claims to cover footage that was never imported.
+    const capturedDuration = Math.min(duration, count / fps);
+    return { width: sized.width, height: sized.height, duration: capturedDuration, frames };
   } finally {
     URL.revokeObjectURL(url);
     video.src = "";
