@@ -4,7 +4,7 @@
  * These methods are Android-native. Browser development should use a separate
  * file-input / HTMLVideoElement fallback rather than pretending native APIs exist.
  */
-import { Capacitor, convertFileSrc, registerPlugin } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import type { PluginListenerHandle } from "@capacitor/core";
 
 export interface PickedVideo {
@@ -173,6 +173,6 @@ export const FrameExtractor = {
   },
   /** Convert an app-private native file path into a URL the Capacitor WebView can display. */
   toWebViewUrl(nativePath: string): string {
-    return convertFileSrc(nativePath);
+    return Capacitor.convertFileSrc(nativePath);
   },
 };
