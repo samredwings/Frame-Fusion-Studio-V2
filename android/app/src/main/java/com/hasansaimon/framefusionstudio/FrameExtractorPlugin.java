@@ -237,6 +237,20 @@ public class FrameExtractorPlugin extends Plugin {
         int videoTrack = -1;
         float nominalFps = 0f;
 
+        // Track duration may be missing for some containers. Use container metadata
+        // as a second source so the final frame has a meaningful presentation interval.
+        MediaMetadataRetriever metadata = new MediaMetadataRetriever();
+        try {
+            metadata.setDataSource(getContext(), uri);
+            metadataFrameCount = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? parseInt(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT))
+                : 0;
+            long metadataDurationMs = parseLong(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
+            if (metadataDurationMs > 0) durationUs = metadataDurationMs * 1000L;
+        } finally {
+            metadata.release();
+        }
+
         try {
             extractor.setDataSource(getContext(), uri, null);
             for (int i = 0; i < extractor.getTrackCount(); i++) {
@@ -250,16 +264,6 @@ public class FrameExtractorPlugin extends Plugin {
                 }
             }
             if (videoTrack < 0) throw new IllegalArgumentException("No video track found.");
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                MediaMetadataRetriever metadata = new MediaMetadataRetriever();
-                try {
-                    metadata.setDataSource(getContext(), uri);
-                    metadataFrameCount = parseInt(metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT));
-                } finally {
-                    metadata.release();
-                }
-            }
 
             extractor.selectTrack(videoTrack);
             while (true) {
@@ -277,7 +281,16 @@ public class FrameExtractorPlugin extends Plugin {
         // A chronological index is required by the editor. Store presentation timestamps,
         // not decode-order positions or duration × FPS estimates.
         Collections.sort(timestamps);
-        if (durationUs <= 0) durationUs = timestamps.get(timestamps.size() - 1);
+        long lastPts = timestamps.get(timestamps.size() - 1);
+        if (durationUs <= lastPts) {
+            long fallbackDuration = 33_333L;
+            if (timestamps.size() > 1) {
+                fallbackDuration = Math.max(1L, lastPts - timestamps.get(timestamps.size() - 2));
+            } else if (nominalFps > 0f) {
+                fallbackDuration = Math.max(1L, Math.round(1_000_000.0 / nominalFps));
+            }
+            durationUs = lastPts + fallbackDuration;
+        }
 
         String indexId = sha256(uri.toString());
         File indexDir = new File(getContext().getFilesDir(), "frame_fusion/indexes");
