@@ -1,28 +1,101 @@
 const DB_NAME = "frame-fusion";
-const VERSION = 2;
+const VERSION = 3;
 const STORES = [
-  "projects", "sources", "edits", "regions", "exports", "blobs",
-  "sourceVideos", "frameAssets", "editedImages", "repairManifests",
-  "operationLogs", "renderJobs", "settings", "thumbnailBlobs", "frameBlobs", "maskBlobs",
+  "projects",
+  "sources",
+  "edits",
+  "regions",
+  "exports",
+  "blobs",
+  "sourceVideos",
+  "videoSources",
+  "frameAssets",
+  "editedImages",
+  "repairManifests",
+  "operationLogs",
+  "renderJobs",
+  "settings",
+  "thumbnailBlobs",
+  "frameBlobs",
+  "maskBlobs",
+  "detectedWatermarks",
+  "watermarkRemovals",
+  "textRemovals",
 ] as const;
+
+const INDEXES: Record<string, Array<{ name: string; keyPath: string }>> = {
+  videoSources: [{ name: "projectId", keyPath: "projectId" }],
+  frameAssets: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+    { name: "frameIndex", keyPath: "frameIndex" },
+  ],
+  editedImages: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+    { name: "frameIndex", keyPath: "frameIndex" },
+  ],
+  repairManifests: [{ name: "projectId", keyPath: "projectId" }],
+  renderJobs: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+  ],
+  detectedWatermarks: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+  ],
+  watermarkRemovals: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+  ],
+  textRemovals: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+  ],
+};
 
 let opening: Promise<IDBDatabase> | null = null;
 
 function openDb(): Promise<IDBDatabase> {
-  if (typeof indexedDB === "undefined") return Promise.reject(new Error("This browser has no local library."));
+  if (typeof indexedDB === "undefined")
+    return Promise.reject(new Error("This browser has no local library."));
   if (!opening) {
     opening = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
+        const tx = req.transaction;
+        if (!tx) return;
         for (const name of STORES) {
           if (!db.objectStoreNames.contains(name)) db.createObjectStore(name);
         }
+        for (const [storeName, indexes] of Object.entries(INDEXES)) {
+          const store = tx.objectStore(storeName);
+          for (const index of indexes) {
+            if (!store.indexNames.contains(index.name))
+              store.createIndex(index.name, index.keyPath, { unique: false });
+          }
+        }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          opening = null;
+        };
+        resolve(db);
+      };
       req.onerror = () => {
         opening = null;
         reject(req.error ?? new Error("Could not open the library"));
+      };
+      req.onblocked = () => {
+        opening = null;
+        reject(
+          new Error(
+            "The library upgrade is blocked by another open Frame Fusion tab. Close other tabs and retry.",
+          ),
+        );
       };
     });
   }

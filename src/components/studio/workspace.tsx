@@ -1,6 +1,19 @@
 import { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Columns2, Download, Film, Scan, ScanFace, Settings2, SlidersHorizontal, Upload, X, type LucideIcon } from "lucide-react";
+import {
+  ArrowLeft,
+  Columns2,
+  Download,
+  Film,
+  Scan,
+  ScanFace,
+  Settings2,
+  SlidersHorizontal,
+  Upload,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { idbDel, idbPut } from "@/lib/studio/idb";
 import { useStudio } from "@/lib/studio/store";
 import { TOOLS, type ToolId } from "@/lib/studio/types";
@@ -35,15 +48,20 @@ export function Workspace({
   const ready = useStudio((state) => state.ready);
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
+  const frameAssets = useStudio((state) => state.frameAssets);
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
   const importVideo = useStudio((state) => state.importVideo);
+  const importNativeVideo = useStudio((state) => state.importNativeVideo);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const deleteFrame = useStudio((state) => state.deleteFrame);
   const project = projects.find((item) => item.id === projectId);
   const mine = sources.filter((source) => source.projectId === projectId);
-  const source = mine.find((item) => item.id === sourceId) ?? mine.find((item) => item.role === "primary") ?? mine[0];
-  const { urls, loading } = useBaseFrames(source);
+  const source =
+    mine.find((item) => item.id === sourceId) ??
+    mine.find((item) => item.role === "primary") ??
+    mine[0];
+  const { urls, loading } = useBaseFrames(source, frameAssets);
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
   const [frameIndex, setFrameIndex] = useState(0);
@@ -54,7 +72,9 @@ export function Workspace({
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const frameImageRef = useRef<HTMLInputElement>(null);
-  const replaceTarget = useRef<{ sourceId: string; projectId: string; frameIndex: number } | null>(null);
+  const replaceTarget = useRef<{ sourceId: string; projectId: string; frameIndex: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!ready || !source || source.id === sourceId) return;
@@ -86,9 +106,12 @@ export function Workspace({
 
   useEffect(() => {
     if (!playing || !source?.frameCount) return;
-    const timer = window.setInterval(() => {
-      setFrameIndex((current) => (current + 1) % source.frameCount);
-    }, 1000 / Math.max(1, source.fps));
+    const timer = window.setInterval(
+      () => {
+        setFrameIndex((current) => (current + 1) % source.frameCount);
+      },
+      1000 / Math.max(1, source.fps),
+    );
     return () => window.clearInterval(timer);
   }, [playing, source]);
 
@@ -96,7 +119,14 @@ export function Workspace({
     function onKey(event: KeyboardEvent) {
       if (editOpen || toolsOpen) return;
       const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      )
+        return;
       if (!source) return;
       if (event.key === "ArrowRight") {
         event.preventDefault();
@@ -112,7 +142,11 @@ export function Workspace({
       } else if (event.key >= "1" && event.key <= "5") {
         const next = TOOLS[Number(event.key) - 1];
         if (next) {
-          void navigate({ to: "/projects/$projectId", params: { projectId }, search: { tool: next.id, source: source.id } });
+          void navigate({
+            to: "/projects/$projectId",
+            params: { projectId },
+            search: { tool: next.id, source: source.id },
+          });
         }
       }
     }
@@ -121,7 +155,11 @@ export function Workspace({
   }, [source, navigate, projectId, editOpen, toolsOpen]);
 
   function openTool(next: ToolId) {
-    void navigate({ to: "/projects/$projectId", params: { projectId }, search: { tool: next, source: source?.id } });
+    void navigate({
+      to: "/projects/$projectId",
+      params: { projectId },
+      search: { tool: next, source: source?.id },
+    });
   }
 
   function onFrameAction(action: FrameAction, index: number) {
@@ -136,13 +174,25 @@ export function Workspace({
     }
     if (action === "replace") {
       setFrameIndex(index);
-      replaceTarget.current = { sourceId: source.id, projectId: source.projectId, frameIndex: index };
+      replaceTarget.current = {
+        sourceId: source.id,
+        projectId: source.projectId,
+        frameIndex: index,
+      };
       frameImageRef.current?.click();
       return;
     }
     void deleteFrame(source.id, index)
-      .then(() => setFrameIndex((current) => Math.min(current > index ? current - 1 : current, source.frameCount - 2)))
-      .catch((error) => useStudio.setState({ error: error instanceof Error ? error.message : "Could not remove that frame." }));
+      .then(() =>
+        setFrameIndex((current) =>
+          Math.min(current > index ? current - 1 : current, source.frameCount - 2),
+        ),
+      )
+      .catch((error) =>
+        useStudio.setState({
+          error: error instanceof Error ? error.message : "Could not remove that frame.",
+        }),
+      );
   }
 
   async function onReplacementImage(file: File) {
@@ -161,12 +211,44 @@ export function Workspace({
     const blobKey = `r:${id}`;
     try {
       await idbPut("blobs", blobKey, file);
-      await upsertEdit({ id, projectId: target.projectId, sourceId: target.sourceId, frameIndex: target.frameIndex, kind: "replace", blobKey });
+      await upsertEdit({
+        id,
+        projectId: target.projectId,
+        sourceId: target.sourceId,
+        frameIndex: target.frameIndex,
+        kind: "replace",
+        blobKey,
+      });
       useStudio.setState({ notice: `Frame ${target.frameIndex + 1} was replaced.` });
     } catch (error) {
       await idbDel("blobs", blobKey).catch(() => undefined);
-      useStudio.setState({ error: error instanceof Error ? error.message : "Could not replace that frame." });
+      useStudio.setState({
+        error: error instanceof Error ? error.message : "Could not replace that frame.",
+      });
     }
+  }
+
+  async function onNativeImport() {
+    if (!project) return;
+    try {
+      const id = await importNativeVideo(project.id);
+      setFrameIndex(0);
+      void navigate({
+        to: "/projects/$projectId",
+        params: { projectId },
+        search: { tool, source: id },
+      });
+    } catch {
+      /* The app-level status line explains import failures. */
+    }
+  }
+
+  function openVideoPicker() {
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") {
+      void onNativeImport();
+      return;
+    }
+    fileRef.current?.click();
   }
 
   async function onFile(file: File) {
@@ -174,14 +256,22 @@ export function Workspace({
     try {
       const id = await importVideo(project.id, file, fps);
       setFrameIndex(0);
-      void navigate({ to: "/projects/$projectId", params: { projectId }, search: { tool, source: id } });
+      void navigate({
+        to: "/projects/$projectId",
+        params: { projectId },
+        search: { tool, source: id },
+      });
     } catch {
       /* The app-level status line explains import failures. */
     }
   }
 
   if (!ready) {
-    return <Shell><p className="m-auto text-sm text-muted">Opening your local library…</p></Shell>;
+    return (
+      <Shell>
+        <p className="m-auto text-sm text-muted">Opening your local library…</p>
+      </Shell>
+    );
   }
 
   if (!project) {
@@ -190,8 +280,12 @@ export function Workspace({
         <div className="m-auto max-w-md px-6 text-center">
           <h1 className="font-display text-2xl font-semibold">Project unavailable</h1>
           <p className="mt-2 text-sm text-muted">This project isn’t in the on-device library.</p>
-          <Link to="/" className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-full border border-line px-4 text-sm hover:bg-surface">
-            <ArrowLeft className="size-4" aria-hidden="true" />Back to projects
+          <Link
+            to="/"
+            className="mt-5 inline-flex min-h-11 items-center gap-2 rounded-full border border-line px-4 text-sm hover:bg-surface"
+          >
+            <ArrowLeft className="size-4" aria-hidden="true" />
+            Back to projects
           </Link>
         </div>
       </Shell>
@@ -202,12 +296,20 @@ export function Workspace({
     <Shell
       trail={
         <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-          <Link to="/" aria-label="Back to projects" className="grid size-10 shrink-0 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
+          <Link
+            to="/"
+            aria-label="Back to projects"
+            className="grid size-10 shrink-0 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
+          >
             <ArrowLeft className="size-4" aria-hidden="true" />
           </Link>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-display text-sm font-semibold sm:text-base">{project.name}</p>
-            <p className="hidden font-mono text-[9px] uppercase tracking-[0.16em] text-muted sm:block">LOCAL PROJECT</p>
+            <p className="truncate font-display text-sm font-semibold sm:text-base">
+              {project.name}
+            </p>
+            <p className="hidden font-mono text-[9px] uppercase tracking-[0.16em] text-muted sm:block">
+              LOCAL PROJECT
+            </p>
           </div>
           <Link
             to="/projects/$projectId/settings"
@@ -231,20 +333,38 @@ export function Workspace({
               value={source?.id ?? ""}
               onChange={(event) => {
                 const next = event.target.value;
-                if (next) void navigate({ to: "/projects/$projectId", params: { projectId }, search: { tool, source: next } });
+                if (next)
+                  void navigate({
+                    to: "/projects/$projectId",
+                    params: { projectId },
+                    search: { tool, source: next },
+                  });
               }}
               aria-label="Selected source"
             >
               {!mine.length ? <option value="">Choose a take</option> : null}
               {mine.map((item, index) => (
-                <option key={item.id} value={item.id}>{String(index + 1).padStart(2, "0")} · {item.filename}</option>
+                <option key={item.id} value={item.id}>
+                  {String(index + 1).padStart(2, "0")} · {item.filename}
+                </option>
               ))}
             </Select>
           </label>
           <label className="studio-rate flex shrink-0 items-center gap-2 rounded-xl px-2.5">
-            <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">Capture</span>
-            <Select className="w-[5.25rem] border-0 bg-transparent px-1" aria-label="Extract frame rate" value={fps} onChange={(event) => setFps(Number(event.target.value))}>
-              {[4, 8, 12, 24].map((value) => <option key={value} value={value}>{value} fps</option>)}
+            <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">
+              Capture
+            </span>
+            <Select
+              className="w-[5.25rem] border-0 bg-transparent px-1"
+              aria-label="Extract frame rate"
+              value={fps}
+              onChange={(event) => setFps(Number(event.target.value))}
+            >
+              {[4, 8, 12, 24].map((value) => (
+                <option key={value} value={value}>
+                  {value} fps
+                </option>
+              ))}
             </Select>
           </label>
           <input
@@ -270,7 +390,11 @@ export function Workspace({
               event.currentTarget.value = "";
             }}
           />
-          <Button className="shrink-0 rounded-xl px-3" onClick={() => fileRef.current?.click()} aria-label="Import a video take">
+          <Button
+            className="shrink-0 rounded-xl px-3"
+            onClick={openVideoPicker}
+            aria-label="Import a video take"
+          >
             <Upload className="size-4" aria-hidden="true" />
             <span className="hidden sm:inline">Import</span>
           </Button>
@@ -279,26 +403,107 @@ export function Workspace({
         <main className="flex min-h-0 flex-1 flex-col">
           {!source ? (
             <div className="m-auto max-w-md px-6 py-10 text-center">
-              <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-surface-2 text-amber"><Film className="size-6" aria-hidden="true" /></span>
+              <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-surface-2 text-amber">
+                <Film className="size-6" aria-hidden="true" />
+              </span>
               <p className="studio-kicker mt-5">FIRST TAKE</p>
-              <h2 className="mt-1 font-display text-2xl font-semibold tracking-tight">Bring a clip into the atlas</h2>
-              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">Frames are extracted on this device. Your clip stays local; capture up to six seconds at 24 fps.</p>
-              <Button className="mt-5" onClick={() => fileRef.current?.click()}><Upload className="size-4" aria-hidden="true" />Import video</Button>
+              <h2 className="mt-1 font-display text-2xl font-semibold tracking-tight">
+                Bring a clip into the atlas
+              </h2>
+              <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">
+                Frames are extracted on this device at the selected rate and original decoded
+                dimensions. Longer clips may take more time and storage.
+              </p>
+              <Button className="mt-5" onClick={openVideoPicker}>
+                <Upload className="size-4" aria-hidden="true" />
+                Import video
+              </Button>
             </div>
           ) : loading || !urls.length ? (
-            <p className="m-auto text-sm text-muted" role="status">Preparing frame rail…</p>
+            <p className="m-auto text-sm text-muted" role="status">
+              Preparing frame rail…
+            </p>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col">
-              {tool === "frames" ? <FrameTool source={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} previewRef={previewRef} editorOpen={editOpen} onCloseEditor={() => setEditOpen(false)} onOpenTools={() => { setEditOpen(false); setToolsOpen(true); }} regionAssets={regionAssets} onOpenPortrait={() => { setEditOpen(false); openTool("faces"); }} /> : null}
-              {tool === "compare" ? <CompareTool sources={mine} primary={source} urls={urls} frameIndex={Math.min(frameIndex, urls.length - 1)} onSeek={setFrameIndex} /> : null}
-              {tool === "blur" ? <BlurTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
-              {tool === "faces" ? <FaceTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
-              {tool === "export" ? <ExportTool source={source} urls={urls} replacements={replacements} regionAssets={regionAssets} frameIndex={Math.min(frameIndex, urls.length - 1)} playing={playing} onSeek={setFrameIndex} onToggle={() => setPlaying((value) => !value)} onFrameAction={onFrameAction} /> : null}
+              {tool === "frames" ? (
+                <FrameTool
+                  source={source}
+                  urls={urls}
+                  frameIndex={Math.min(frameIndex, urls.length - 1)}
+                  playing={playing}
+                  onSeek={setFrameIndex}
+                  onToggle={() => setPlaying((value) => !value)}
+                  onFrameAction={onFrameAction}
+                  previewRef={previewRef}
+                  editorOpen={editOpen}
+                  onCloseEditor={() => setEditOpen(false)}
+                  onOpenTools={() => {
+                    setEditOpen(false);
+                    setToolsOpen(true);
+                  }}
+                  regionAssets={regionAssets}
+                  onOpenPortrait={() => {
+                    setEditOpen(false);
+                    openTool("faces");
+                  }}
+                />
+              ) : null}
+              {tool === "compare" ? (
+                <CompareTool
+                  sources={mine}
+                  primary={source}
+                  urls={urls}
+                  frameIndex={Math.min(frameIndex, urls.length - 1)}
+                  onSeek={setFrameIndex}
+                />
+              ) : null}
+              {tool === "blur" ? (
+                <BlurTool
+                  source={source}
+                  urls={urls}
+                  replacements={replacements}
+                  regionAssets={regionAssets}
+                  frameIndex={Math.min(frameIndex, urls.length - 1)}
+                  playing={playing}
+                  onSeek={setFrameIndex}
+                  onToggle={() => setPlaying((value) => !value)}
+                  onFrameAction={onFrameAction}
+                />
+              ) : null}
+              {tool === "faces" ? (
+                <FaceTool
+                  source={source}
+                  urls={urls}
+                  replacements={replacements}
+                  regionAssets={regionAssets}
+                  frameIndex={Math.min(frameIndex, urls.length - 1)}
+                  playing={playing}
+                  onSeek={setFrameIndex}
+                  onToggle={() => setPlaying((value) => !value)}
+                  onFrameAction={onFrameAction}
+                />
+              ) : null}
+              {tool === "export" ? (
+                <ExportTool
+                  source={source}
+                  urls={urls}
+                  replacements={replacements}
+                  regionAssets={regionAssets}
+                  frameIndex={Math.min(frameIndex, urls.length - 1)}
+                  playing={playing}
+                  onSeek={setFrameIndex}
+                  onToggle={() => setPlaying((value) => !value)}
+                  onFrameAction={onFrameAction}
+                />
+              ) : null}
             </div>
           )}
         </main>
 
-        <nav className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5" aria-label="Editor tools">
+        <nav
+          className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
+          aria-label="Editor tools"
+        >
           <div className="min-w-0">
             <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted">Editing</p>
             <p className="truncate text-sm font-semibold">{toolMeta[tool].label}</p>
@@ -310,28 +515,72 @@ export function Workspace({
             onClick={() => {
               if (tool !== "frames") openTool("frames");
               setToolsOpen(false);
-              setEditOpen((open) => tool === "frames" ? !open : true);
+              setEditOpen((open) => (tool === "frames" ? !open : true));
             }}
           >
-            <SlidersHorizontal className="size-4" aria-hidden="true" />Edit
+            <SlidersHorizontal className="size-4" aria-hidden="true" />
+            Edit
           </Button>
         </nav>
       </div>
       {toolsOpen ? (
-        <div className="studio-sheet-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/65 px-3 pt-8" onClick={() => setToolsOpen(false)}>
-          <section role="dialog" aria-modal="true" aria-labelledby="tool-picker-title" className="studio-sheet w-full max-w-lg rounded-t-3xl p-4 sm:mb-4 sm:rounded-3xl sm:p-5" onClick={(event) => event.stopPropagation()}>
+        <div
+          className="studio-sheet-backdrop fixed inset-0 z-50 flex items-end justify-center bg-black/65 px-3 pt-8"
+          onClick={() => setToolsOpen(false)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="tool-picker-title"
+            className="studio-sheet w-full max-w-lg rounded-t-3xl p-4 sm:mb-4 sm:rounded-3xl sm:p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-line sm:hidden" />
             <div className="flex items-start justify-between gap-4">
-              <div><p className="studio-kicker">FRAME FUSION</p><h2 id="tool-picker-title" className="mt-1 font-display text-2xl font-semibold">Tools</h2></div>
-              <button type="button" aria-label="Close tool picker" className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg" onClick={() => setToolsOpen(false)}><X className="size-4" aria-hidden="true" /></button>
+              <div>
+                <p className="studio-kicker">FRAME FUSION</p>
+                <h2 id="tool-picker-title" className="mt-1 font-display text-2xl font-semibold">
+                  Tools
+                </h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close tool picker"
+                className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
+                onClick={() => setToolsOpen(false)}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
             </div>
             <div className="mt-3 grid gap-2">
               {TOOLS.map(({ id }) => {
                 const { label, Icon } = toolMeta[id];
                 return (
-                  <button key={id} type="button" autoFocus={id === tool} className={`studio-sheet-action ${id === tool ? "bg-surface-2" : ""}`} onClick={() => { setToolsOpen(false); openTool(id); }}>
+                  <button
+                    key={id}
+                    type="button"
+                    autoFocus={id === tool}
+                    className={`studio-sheet-action ${id === tool ? "bg-surface-2" : ""}`}
+                    onClick={() => {
+                      setToolsOpen(false);
+                      openTool(id);
+                    }}
+                  >
                     <Icon className="size-5 text-amber" aria-hidden="true" />
-                    <span><strong>{label}</strong><small>{id === "frames" ? "Adjust, replace, and save individual frames" : id === "compare" ? "Compare two takes side by side" : id === "blur" ? "Mask or blur selected regions" : id === "faces" ? "Track and stabilize a face lock" : "Render and share the finished take"}</small></span>
+                    <span>
+                      <strong>{label}</strong>
+                      <small>
+                        {id === "frames"
+                          ? "Adjust, replace, and save individual frames"
+                          : id === "compare"
+                            ? "Compare two takes side by side"
+                            : id === "blur"
+                              ? "Mask or blur selected regions"
+                              : id === "faces"
+                                ? "Track and stabilize a face lock"
+                                : "Render and share the finished take"}
+                      </small>
+                    </span>
                   </button>
                 );
               })}

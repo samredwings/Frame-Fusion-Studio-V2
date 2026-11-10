@@ -602,6 +602,44 @@ public class FrameExtractorPlugin extends Plugin {
         return value;
     }
 
+    @PluginMethod
+    public void deleteVideoData(PluginCall call) {
+        String uriText = call.getString("uri");
+        if (uriText == null || uriText.trim().isEmpty()) {
+            call.reject("uri is required.");
+            return;
+        }
+        execute(call, () -> {
+            String indexId = sha256(uriText);
+            File root = new File(getContext().getFilesDir(), "frame_fusion");
+            deleteOwnedPath(new File(root, "indexes/" + indexId + ".pts"));
+            deleteOwnedPath(new File(root, "frames/" + indexId));
+            deleteOwnedPath(new File(root, "thumbnails/" + indexId));
+            try {
+                getContext().getContentResolver().releasePersistableUriPermission(
+                    Uri.parse(uriText), Intent.FLAG_GRANT_READ_URI_PERMISSION
+                );
+            } catch (SecurityException | IllegalArgumentException ignored) {
+                // The provider may not have granted a persistable permission.
+            }
+            JSObject value = new JSObject();
+            value.put("deleted", true);
+            value.put("indexId", indexId);
+            return value;
+        });
+    }
+
+    private void deleteOwnedPath(File path) throws Exception {
+        if (!path.exists()) return;
+        if (path.isDirectory()) {
+            File[] children = path.listFiles();
+            if (children != null) {
+                for (File child : children) deleteOwnedPath(child);
+            }
+        }
+        if (!path.delete()) throw new IllegalStateException("Could not remove app-owned frame data: " + path.getName());
+    }
+
     private File getIndexFile(String indexId) throws Exception {
         File file = new File(new File(getContext().getFilesDir(), "frame_fusion/indexes"), indexId + ".pts");
         if (!file.isFile()) throw new IllegalStateException("The timestamp index is missing. Re-index the source video.");

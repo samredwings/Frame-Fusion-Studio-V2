@@ -118,6 +118,7 @@ export interface FrameExtractorPlugin {
     width?: number;
     quality?: number;
   }): Promise<{ indexId: string; generatedCount: number; thumbnails: GeneratedThumbnail[] }>;
+  deleteVideoData(options: { uri: string }): Promise<{ deleted: boolean; indexId: string }>;
   addListener(
     eventName: "extractProgress",
     listenerFunc: (event: ExtractProgressEvent) => void,
@@ -145,11 +146,20 @@ export const FrameExtractor = {
     assertAndroid();
     return NativeFrameExtractor.buildFrameIndex({ uri });
   },
-  getFrameTimestampPage(uri: string, startFrameIndex: number, limit = 500): Promise<FrameTimestampPage> {
+  getFrameTimestampPage(
+    uri: string,
+    startFrameIndex: number,
+    limit = 500,
+  ): Promise<FrameTimestampPage> {
     assertAndroid();
     return NativeFrameExtractor.getFrameTimestampPage({ uri, startFrameIndex, limit });
   },
-  extractFrame(uri: string, frameIndex: number, targetWidth = 0, quality = 95): Promise<ExtractedFrame> {
+  extractFrame(
+    uri: string,
+    frameIndex: number,
+    targetWidth = 0,
+    quality = 95,
+  ): Promise<ExtractedFrame> {
     assertAndroid();
     return NativeFrameExtractor.extractFrame({ uri, frameIndex, targetWidth, quality });
   },
@@ -161,11 +171,21 @@ export const FrameExtractor = {
     quality = 95,
   ): Promise<ExtractFrameRangeResult> {
     assertAndroid();
-    return NativeFrameExtractor.extractFrameRange({ uri, startFrameIndex, endFrameIndex, targetWidth, quality });
+    return NativeFrameExtractor.extractFrameRange({
+      uri,
+      startFrameIndex,
+      endFrameIndex,
+      targetWidth,
+      quality,
+    });
   },
   generateThumbnails(uri: string, count = 100, width = 160, quality = 80) {
     assertAndroid();
     return NativeFrameExtractor.generateThumbnails({ uri, count, width, quality });
+  },
+  deleteVideoData(uri: string): Promise<{ deleted: boolean; indexId: string }> {
+    assertAndroid();
+    return NativeFrameExtractor.deleteVideoData({ uri });
   },
   addProgressListener(listener: (event: ExtractProgressEvent) => void) {
     assertAndroid();

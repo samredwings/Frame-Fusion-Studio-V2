@@ -1,3 +1,4 @@
+import type { FrameAsset } from "@/lib/studio/types";
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -26,7 +27,9 @@ export async function downloadOrShareBlob(blob: Blob, filename: string): Promise
     const safeFilename =
       Array.from(filename, (character) =>
         character.charCodeAt(0) < 32 || '\\/:*?"<>|'.includes(character) ? "_" : character,
-      ).join("").trim() || "export";
+      )
+        .join("")
+        .trim() || "export";
     const path = `${EXPORT_FILE_PREFIX}${Date.now()}-${crypto.randomUUID()}-${safeFilename}`;
     const file = await Filesystem.writeFile({
       path,
@@ -67,13 +70,33 @@ export async function sweepOldExports(): Promise<void> {
 
     for (const entry of files) {
       if (!entry.name.startsWith(EXPORT_FILE_PREFIX)) continue;
-      const timestampText = entry.name.slice(EXPORT_FILE_PREFIX.length, EXPORT_FILE_PREFIX.length + 13);
+      const timestampText = entry.name.slice(
+        EXPORT_FILE_PREFIX.length,
+        EXPORT_FILE_PREFIX.length + 13,
+      );
       const createdAt = Number(timestampText);
       if (!Number.isFinite(createdAt) || createdAt <= 0 || createdAt >= cutoff) continue;
 
-      await Filesystem.deleteFile({ path: entry.name, directory: Directory.Cache }).catch(() => undefined);
+      await Filesystem.deleteFile({ path: entry.name, directory: Directory.Cache }).catch(
+        () => undefined,
+      );
     }
   } catch {
     // A missing or inaccessible cache directory must not prevent app startup.
   }
+}
+
+/** Download/share a full-resolution native frame asset without mutating its source video. */
+export async function downloadFrameAsset(asset: FrameAsset, sourceName = "frame"): Promise<void> {
+  const path = asset.fullResolutionPath;
+  if (!path) throw new Error("This frame does not have a saved full-resolution file.");
+  const url = Capacitor.isNativePlatform() ? Capacitor.convertFileSrc(path) : path;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Could not read the saved frame asset.");
+  const blob = await response.blob();
+  const safeSource = sourceName.replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "") || "frame";
+  await downloadOrShareBlob(
+    blob,
+    `${safeSource}-frame-${String(asset.frameIndex + 1).padStart(6, "0")}.jpg`,
+  );
 }
