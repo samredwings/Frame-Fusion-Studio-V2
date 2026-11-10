@@ -1,6 +1,6 @@
 const DB_NAME = "frame-fusion";
-const VERSION = 1;
-const STORES = ["projects", "sources", "edits", "regions", "exports", "blobs"] as const;
+const VERSION = 2;
+const STORES = [\n  "projects", "sources", "edits", "regions", "exports", "blobs",\n  "sourceVideos", "frameAssets", "editedImages", "repairManifests",\n  "operationLogs", "renderJobs", "settings", "thumbnailBlobs", "frameBlobs", "maskBlobs",\n] as const;
 
 let opening: Promise<IDBDatabase> | null = null;
 
