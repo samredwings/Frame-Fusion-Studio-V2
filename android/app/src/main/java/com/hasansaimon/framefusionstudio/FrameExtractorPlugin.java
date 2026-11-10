@@ -316,7 +316,7 @@ public class FrameExtractorPlugin extends Plugin {
             if (spanUs > 0) averageFps = (float) ((frameCount - 1) * 1_000_000.0 / spanUs);
         }
         boolean isVfr = detectVariableFrameRate(timestamps);
-        boolean verified = metadataFrameCount <= 0 || metadataFrameCount == frameCount;
+        boolean verified = metadataFrameCount > 0 && metadataFrameCount == frameCount;
 
         JSObject value = new JSObject();
         value.put("uri", uri.toString());
@@ -329,9 +329,10 @@ public class FrameExtractorPlugin extends Plugin {
         value.put("indexVerified", verified);
         value.put("metadataFrameCount", metadataFrameCount);
         if (!verified) {
-            value.put("warning", "Android metadata reports " + metadataFrameCount +
-                " frames but the timestamp index contains " + frameCount +
-                " samples. Exact frame reconstruction should be disabled until this source is validated.");
+            String warning = metadataFrameCount <= 0
+                ? "Android did not provide an independent metadata frame count. The sample index was built but has not been cross-checked."
+                : "Android metadata reports " + metadataFrameCount + " frames but the timestamp index contains " + frameCount + " samples.";
+            value.put("warning", warning + " Exact frame reconstruction should remain disabled until this source is validated.");
         }
         return value;
     }
