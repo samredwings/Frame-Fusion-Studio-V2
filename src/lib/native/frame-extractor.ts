@@ -15,6 +15,24 @@ export interface PickedVideo {
   persistablePermission: boolean;
 }
 
+export interface VideoTrackInfo {
+  trackIndex: number;
+  mimeType: string;
+  durationUs?: number;
+  bitRate?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  profile?: number;
+  level?: number;
+  colorStandard?: number;
+  colorTransfer?: number;
+  colorRange?: number;
+  language?: string;
+}
+
 export interface VideoInfo {
   uri: string;
   filename: string;
@@ -23,6 +41,7 @@ export interface VideoInfo {
   metadataFrameCount: number;
   nominalFrameRate: number;
   averageFrameRate: number;
+  captureFrameRate?: number;
   width: number;
   height: number;
   rotation: number;
@@ -33,6 +52,9 @@ export interface VideoInfo {
   audioChannels?: number;
   audioSampleRate?: number;
   audioBitrate?: number;
+  /** Metadata tags exposed by the Android container parser. EXIF-style date/location tags are included when present. */
+  embeddedMetadata?: Record<string, string>;
+  tracks?: VideoTrackInfo[];
 }
 
 export interface FrameIndexResult {
