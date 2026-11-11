@@ -6,6 +6,8 @@
  */
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import type { PluginListenerHandle } from "@capacitor/core";
+import { assertRemovalFrameRange } from "@/lib/native/removal-range";
+export { MAX_REMOVAL_FRAMES_PER_CALL } from "@/lib/native/removal-range";
 import type {
   DetectionMethod,
   NormalizedRect,
@@ -199,6 +201,7 @@ export interface FrameExtractorPlugin {
     detectionMethod: string;
   }): Promise<RemovalResult>;
   previewRemoval(options: {
+    uri: string;
     framePath: string;
     bounds: NormalizedRect;
     algorithm: string;
@@ -296,6 +299,7 @@ export const FrameExtractor = {
     settings: WatermarkRemovalSettings,
   ) {
     assertAndroid();
+    assertRemovalFrameRange(startFrameIndex, endFrameIndex);
     return NativeFrameExtractor.removeWatermark({
       uri, watermarkId, bounds, startFrameIndex, endFrameIndex, settings,
     });
@@ -309,11 +313,13 @@ export const FrameExtractor = {
     detectionMethod: string = "manual",
   ) {
     assertAndroid();
+    assertRemovalFrameRange(startFrameIndex, endFrameIndex);
     return NativeFrameExtractor.removeText({
       uri, bounds, startFrameIndex, endFrameIndex, settings, detectionMethod,
     });
   },
   previewRemoval(
+    uri: string,
     framePath: string,
     bounds: NormalizedRect,
     algorithm: string = "naive-diffusion",
@@ -323,7 +329,7 @@ export const FrameExtractor = {
   ) {
     assertAndroid();
     return NativeFrameExtractor.previewRemoval({
-      framePath, bounds, algorithm, donorFramePath, featherPx, expansionPx,
+      uri, framePath, bounds, algorithm, donorFramePath, featherPx, expansionPx,
     });
   },
   deleteVideoData(uri: string): Promise<{ deleted: boolean; indexId: string }> {

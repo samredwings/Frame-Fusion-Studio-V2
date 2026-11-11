@@ -772,26 +772,28 @@ public class FrameExtractorPlugin extends Plugin {
 
     @PluginMethod
     public void previewRemoval(PluginCall call) {
+        String uri = call.getString("uri");
         String framePath = call.getString("framePath");
         JSObject bounds = call.getObject("bounds");
         String algorithm = call.getString("algorithm", "naive-diffusion");
         String donorFramePath = call.getString("donorFramePath");
         int feather = clamp(call.getInt("featherPx", 8), 0, 512);
         int expansion = clamp(call.getInt("expansionPx", 4), 0, 512);
-        if (framePath == null || bounds == null) {
-            call.reject("framePath and bounds are required.");
+        if (uri == null || uri.trim().isEmpty() || framePath == null || bounds == null) {
+            call.reject("uri, framePath and bounds are required.");
             return;
         }
         String operationId = "preview-" + System.currentTimeMillis();
-        executeRemoval(call, operationId, () -> previewRemoval(framePath, bounds, algorithm, donorFramePath, feather, expansion, operationId));
+        executeRemoval(call, operationId, () -> previewRemoval(uri, framePath, bounds, algorithm, donorFramePath, feather, expansion, operationId));
     }
 
-    private JSObject previewRemoval(String framePath, JSObject bounds, String algorithm,
+    private JSObject previewRemoval(String uri, String framePath, JSObject bounds, String algorithm,
                                     String donorFramePath, int featherPx, int expansionPx,
                                     String operationId) throws Exception {
         validateRemovalAlgorithm(algorithm);
-        Bitmap target = BitmapFactory.decodeFile(framePath);
-        if (target == null) throw new IllegalArgumentException("Could not decode the selected frame path.");
+        Bitmap decoded = BitmapFactory.decodeFile(framePath);
+        if (decoded == null) throw new IllegalArgumentException("Could not decode the selected frame path.");
+        Bitmap target = MutableFrameBitmap.copyAndRecycle(decoded);
         Bitmap donor = donorFramePath == null || donorFramePath.trim().isEmpty() ? null : BitmapFactory.decodeFile(donorFramePath);
         if (donorFramePath != null && !donorFramePath.trim().isEmpty() && donor == null) {
             target.recycle();
@@ -799,12 +801,18 @@ public class FrameExtractorPlugin extends Plugin {
         }
         try {
             applyNaiveRemoval(target, bounds, algorithm, donor, null, null, featherPx, expansionPx);
-            String previewKey = sha256(framePath + ":" + operationId);
-            File dir = getOutputDir("previews", previewKey);
-            File output = new File(dir, "preview.jpg");
+            String indexId = sha256(uri);
+            File output = RepairStoragePaths.previewFile(
+                getContext().getFilesDir(), indexId, sha256(operationId).substring(0, 16)
+            );
+            File previewDir = output.getParentFile();
+            if (previewDir == null || (!previewDir.exists() && !previewDir.mkdirs())) {
+                throw new IllegalStateException("Could not create the source-owned preview directory.");
+            }
             writeBitmap(target, output, 95);
             JSObject result = new JSObject();
             result.put("operationId", operationId);
+            result.put("uri", uri);
             result.put("previewPath", output.getAbsolutePath());
             result.put("width", target.getWidth());
             result.put("height", target.getHeight());
@@ -836,9 +844,7 @@ public class FrameExtractorPlugin extends Plugin {
         validateRemovalAlgorithm(algorithm);
         try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
             int frameCount = index.readInt();
-            if (startFrameIndex < 0 || endFrameIndex < startFrameIndex || endFrameIndex >= frameCount) {
-                throw new IllegalArgumentException("The removal frame range is outside the indexed video.");
-            }
+            RemovalFrameRange.validate(startFrameIndex, endFrameIndex, frameCount);
             retriever.setDataSource(getContext(), uri);
             if (donorFrameIndex >= 0) {
                 if (donorFrameIndex >= frameCount) throw new IllegalArgumentException("The donor frame index is outside the timestamp map.");
@@ -1016,7 +1022,7 @@ public class FrameExtractorPlugin extends Plugin {
             deleteOwnedPath(new File(root, "indexes/" + indexId + ".pts"));
             deleteOwnedPath(new File(root, "frames/" + indexId));
             deleteOwnedPath(new File(root, "thumbnails/" + indexId));
-            deleteOwnedPath(new File(root, "repairs/" + indexId));
+            deleteOwnedPath(RepairStoragePaths.repairDirectory(getContext().getFilesDir(), indexId));
             try {
                 getContext().getContentResolver().releasePersistableUriPermission(
                     Uri.parse(uriText), Intent.FLAG_GRANT_READ_URI_PERMISSION

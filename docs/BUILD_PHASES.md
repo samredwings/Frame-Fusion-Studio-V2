@@ -55,10 +55,12 @@ This is the project's working phase plan and status ledger. Percentages are engi
 | OCR text detection | Not implemented | No Tesseract, ML Kit or OCR engine is integrated. Unsupported requested methods are returned explicitly. |
 | Logo recognition | Not implemented | No trained or template-recognition model is integrated. |
 | Editable detection overlay | Not implemented | No bounding-box editor/handles in the UI. |
-| Native repair API | Basic implementation on this branch | `removeWatermark` and `removeText` process a requested frame range and return app-private repaired frame paths. They emit `removalProgress`, `removalComplete` and `removalError`. |
-| Single-frame preview API | Basic implementation on this branch | `previewRemoval` writes a preview JPEG from a selected frame path. No UI flow currently invokes it. |
+| Native repair API | Basic implementation on this branch | `removeWatermark` and `removeText` process a maximum of 250 frames per call and return app-private repaired frame paths. Both the TypeScript bridge and native plugin validate the limit. They emit `removalProgress`, `removalComplete` and `removalError`. |
+| Single-frame preview API | Basic implementation; review defects corrected | `previewRemoval` creates a mutable ARGB_8888 copy before in-place repair and writes the JPEG beneath `repairs/<source-index>/previews/`, which is removed with the source by `deleteVideoData`. No UI flow currently invokes it. Android 15 instrumentation verifies the mutable-copy behavior. |
 | Repair settings panel | Not implemented | No user-facing selection of algorithm, expansion, feather or temporal blend settings. |
 | Repair manifest editor | Not implemented | Types and IndexedDB stores exist, but no user workflow saves/reviews the new native results as an editable manifest. |
+
+**PR #4 automated review corrections:** The three Codex findings were addressed in this branch: (1) preview decoding now copies/recycles the immutable BitmapFactory result before in-place edits; (2) previews are stored under the source's repair directory so `deleteVideoData` reclaims them; and (3) each native removal call is capped at 250 frames to bound both result arrays and Capacitor bridge payloads. Regression coverage includes JVM range/path tests, TypeScript range tests, and an Android 15 Pixel 9 instrumentation test for immutable-to-mutable bitmap copying.
 
 **Acceptance still open:** accuracy thresholds for watermark/subtitle detection are not established; users cannot yet draw/edit detections through a finished repair interface; preview and repair settings are APIs only; persistent manifest workflow is not built.
 
