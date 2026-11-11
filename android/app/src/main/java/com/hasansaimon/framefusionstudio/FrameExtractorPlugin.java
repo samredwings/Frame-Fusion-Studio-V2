@@ -29,6 +29,10 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.io.RandomAccessFile;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -63,6 +67,85 @@ public class FrameExtractorPlugin extends Plugin {
         JSObject run() throws Exception;
     }
 
+    private File getNativeDiagnosticsFile() throws Exception {
+        File directory = new File(getContext().getFilesDir(), "frame_fusion");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Could not create the diagnostics directory.");
+        }
+        return new File(directory, "native-diagnostics.log");
+    }
+
+    private synchronized void appendNativeFailure(Exception error) {
+        try {
+            File file = getNativeDiagnosticsFile();
+            if (file.length() > 256 * 1024L && !file.delete()) {
+                Log.w(TAG, "Could not rotate the native diagnostics file.");
+            }
+            StringWriter stack = new StringWriter();
+            error.printStackTrace(new PrintWriter(stack));
+            String safeStack = stack.toString()
+                .replaceAll("content://\\\\S+", "[content-uri]")
+                .replaceAll("file://\\\\S+", "[file-uri]");
+            try (PrintWriter writer = new PrintWriter(
+                new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8)
+            )) {
+                writer.println("[" + System.currentTimeMillis() + "] Native media operation failed");
+                writer.println(error.getClass().getName() + ": " + error.getMessage());
+                writer.println(safeStack);
+                writer.println();
+            }
+        } catch (Exception loggingError) {
+            Log.w(TAG, "Could not persist native diagnostics.", loggingError);
+        }
+    }
+
+    @PluginMethod
+    public void getNativeDiagnostics(PluginCall call) {
+        try {
+            File file = getNativeDiagnosticsFile();
+            String text = "";
+            if (file.isFile() && file.length() > 0) {
+                int length = (int) Math.min(file.length(), 256 * 1024L);
+                byte[] bytes = new byte[length];
+                int offset = 0;
+                try (FileInputStream input = new FileInputStream(file)) {
+                    while (offset < length) {
+                        int count = input.read(bytes, offset, length - offset);
+                        if (count < 0) break;
+                        offset += count;
+                    }
+                }
+                text = new String(bytes, 0, offset, StandardCharsets.UTF_8);
+            }
+            JSObject value = new JSObject();
+            value.put("text", text);
+            value.put("sizeBytes", file.isFile() ? file.length() : 0);
+            call.resolve(value);
+        } catch (Exception error) {
+            call.reject("Could not read native diagnostics: " + error.getClass().getSimpleName() + ": " + error.getMessage());
+        }
+    }
+
+    private String describeNativeFailure(Exception error) {
+        StringBuilder message = new StringBuilder(error.getClass().getSimpleName());
+        if (error.getMessage() != null && !error.getMessage().isEmpty()) {
+            message.append(": ").append(error.getMessage());
+        }
+        Throwable cause = error.getCause();
+        int depth = 0;
+        while (cause != null && depth < 4) {
+            message.append(" | caused by ").append(cause.getClass().getSimpleName());
+            if (cause.getMessage() != null && !cause.getMessage().isEmpty()) {
+                message.append(": ").append(cause.getMessage());
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return message.toString()
+            .replaceAll("content://\\\\S+", "[content-uri]")
+            .replaceAll("file://\\\\S+", "[file-uri]");
+    }
+
     private void execute(PluginCall call, NativeTask task) {
         try {
             worker.execute(() -> {
@@ -70,11 +153,13 @@ public class FrameExtractorPlugin extends Plugin {
                     call.resolve(task.run());
                 } catch (Exception error) {
                     Log.e(TAG, "Native media operation failed", error);
-                    call.reject(error.getMessage() == null ? "Native media operation failed." : error.getMessage());
+                    appendNativeFailure(error);
+                    call.reject(describeNativeFailure(error));
                 }
             });
         } catch (RejectedExecutionException error) {
-            call.reject("The media worker is shutting down. Reopen the app and try again.");
+            appendNativeFailure(error);
+            call.reject(describeNativeFailure(error));
         }
     }
 

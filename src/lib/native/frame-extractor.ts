@@ -119,6 +119,7 @@ export interface FrameExtractorPlugin {
     quality?: number;
   }): Promise<{ indexId: string; generatedCount: number; thumbnails: GeneratedThumbnail[] }>;
   deleteVideoData(options: { uri: string }): Promise<{ deleted: boolean; indexId: string }>;
+  getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }>;
   addListener(
     eventName: "extractProgress",
     listenerFunc: (event: ExtractProgressEvent) => void,
@@ -186,6 +187,10 @@ export const FrameExtractor = {
   deleteVideoData(uri: string): Promise<{ deleted: boolean; indexId: string }> {
     assertAndroid();
     return NativeFrameExtractor.deleteVideoData({ uri });
+  },
+  getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }> {
+    assertAndroid();
+    return NativeFrameExtractor.getNativeDiagnostics();
   },
   addProgressListener(listener: (event: ExtractProgressEvent) => void) {
     assertAndroid();

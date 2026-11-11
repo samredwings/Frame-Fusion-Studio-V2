@@ -10,6 +10,7 @@ import {
 } from "@/lib/studio/idb";
 import { extractVideoFrames } from "@/lib/studio/media";
 import { FrameExtractor } from "@/lib/native/frame-extractor";
+import { recordDiagnosticError, recordDiagnosticInfo, recordDiagnosticWarning } from "@/lib/diagnostics";
 import { DEMO_PROJECT_ID, seedDemo } from "@/lib/studio/sample";
 import type {
   DetectedWatermark,
@@ -386,19 +387,56 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
   },
   importNativeVideo: async (projectId) => {
-    if (!get().projects.some((item) => item.id === projectId))
-      throw new Error("The selected project is no longer available.");
+    if (!get().projects.some((item) => item.id === projectId)) {
+      const error = new Error("The selected project is no longer available.");
+      recordDiagnosticError("native-import.failed", error, { stage: "validate-project" });
+      throw error;
+    }
     const sourceId = crypto.randomUUID();
     const savedAssetIds: string[] = [];
     let selectedUri: string | null = null;
     let progressHandle: { remove: () => Promise<void> } | null = null;
+    let importStage = "video-picker";
     set({ busy: "Choose a source video…", error: null, notice: null });
+    recordDiagnosticInfo("native-import.started", { projectId });
     try {
+      recordDiagnosticInfo("native-import.picker.opened");
       const picked = await FrameExtractor.pickVideo();
       selectedUri = picked.uri;
+      recordDiagnosticInfo("native-import.video-selected", {
+        mimeType: picked.mimeType || null,
+        sizeBytes: picked.sizeBytes || 0,
+        persistablePermission: picked.persistablePermission,
+        extension: picked.filename.match(/\\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? "unknown",
+      });
+      importStage = "video-metadata";
       set({ busy: "Reading video metadata…" });
       const info = await FrameExtractor.getVideoInfo(picked.uri);
+      recordDiagnosticInfo("native-import.metadata.completed", {
+        sizeBytes: info.sizeBytes,
+        durationMs: info.durationMs,
+        width: info.width,
+        height: info.height,
+        rotation: info.rotation,
+        videoMimeType: info.videoMimeType,
+        videoBitrate: info.videoBitrate,
+        metadataFrameCount: info.metadataFrameCount,
+        hasAudio: info.hasAudio,
+        audioMimeType: info.audioMimeType ?? null,
+      });
+      importStage = "frame-index";
+      recordDiagnosticInfo("native-import.index.started");
       const index = await FrameExtractor.buildFrameIndex(picked.uri);
+      recordDiagnosticInfo("native-import.index.completed", {
+        frameCount: index.frameCount,
+        durationUs: index.durationUs,
+        nominalFrameRate: index.nominalFrameRate,
+        averageFrameRate: index.averageFrameRate,
+        hasVariableFrameRate: index.hasVariableFrameRate,
+        indexVerified: index.indexVerified,
+        metadataFrameCount: index.metadataFrameCount,
+      });
+      if (index.warning) recordDiagnosticWarning("native-import.index.unverified", { warning: index.warning });
       if (index.frameCount < 1) throw new Error("No video frames could be indexed.");
       const fps =
         index.averageFrameRate > 0
@@ -439,6 +477,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         importedAt: now,
         updatedAt: now,
       };
+      importStage = "native-progress-listener";
       progressHandle = await FrameExtractor.addProgressListener((event) => {
         set({
           busy:
@@ -450,10 +489,23 @@ export const useStudio = create<StudioState>((set, get) => ({
             event.progressPercent +
             "%)",
         });
+        if (event.currentFrame === 1 || event.currentFrame === event.totalFrames || event.progressPercent % 10 === 0) {
+          recordDiagnosticInfo("native-import.progress", {
+            currentFrame: event.currentFrame,
+            totalFrames: event.totalFrames,
+            progressPercent: event.progressPercent,
+          });
+        }
       });
       const chunkSize = 250;
       for (let start = 0; start < index.frameCount; start += chunkSize) {
         const end = Math.min(index.frameCount - 1, start + chunkSize - 1);
+        importStage = "extract-frame-chunk:" + start + "-" + end;
+        recordDiagnosticInfo("native-import.chunk.started", {
+          startFrameIndex: start,
+          endFrameIndex: end,
+          totalFrameCount: index.frameCount,
+        });
         set({
           busy: "Indexing frames " + (start + 1) + "–" + (end + 1) + " of " + index.frameCount,
         });
@@ -461,6 +513,12 @@ export const useStudio = create<StudioState>((set, get) => ({
           FrameExtractor.getFrameTimestampPage(picked.uri, start, end - start + 1),
           FrameExtractor.extractFrameRange(picked.uri, start, end, 0, 95),
         ]);
+        recordDiagnosticInfo("native-import.chunk.extracted", {
+          startFrameIndex: start,
+          endFrameIndex: end,
+          timestampCount: timestamps.entries.length,
+          extractedFrameCount: extracted.extractedCount,
+        });
         const durations = new Map(
           timestamps.entries.map((entry) => [entry.frameIndex, entry.durationUs]),
         );
@@ -485,6 +543,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           throw new Error(
             "Native extraction returned " + assets.length + " of " + (end - start + 1) + " frames.",
           );
+        importStage = "persist-frame-chunk:" + start + "-" + end;
         await idbBatch(
           assets.map((asset) => ({
             kind: "put" as const,
@@ -494,6 +553,12 @@ export const useStudio = create<StudioState>((set, get) => ({
           })),
         );
         savedAssetIds.push(...assets.map((asset) => asset.id));
+        recordDiagnosticInfo("native-import.chunk.persisted", {
+          startFrameIndex: start,
+          endFrameIndex: end,
+          savedAssetCount: assets.length,
+          totalSavedAssetCount: savedAssetIds.length,
+        });
         const savedIds = new Set(savedAssetIds);
         set({
           frameAssets: [...get().frameAssets.filter((asset) => !savedIds.has(asset.id)), ...assets],
@@ -513,10 +578,15 @@ export const useStudio = create<StudioState>((set, get) => ({
         lock: null,
         createdAt: now,
       };
+      importStage = "persist-source-records";
       await idbBatch([
         { kind: "put", store: "videoSources", key: sourceId, value: videoSource },
         { kind: "put", store: "sources", key: sourceId, value: legacySource },
       ]);
+      recordDiagnosticInfo("native-import.source-records.persisted", {
+        frameCount: index.frameCount,
+        savedAssetCount: savedAssetIds.length,
+      });
       const project = get().projects.find((item) => item.id === projectId);
       if (project) {
         const next = {
@@ -527,6 +597,15 @@ export const useStudio = create<StudioState>((set, get) => ({
         await idbPut("projects", projectId, next);
         set({ projects: get().projects.map((item) => (item.id === projectId ? next : item)) });
       }
+      recordDiagnosticInfo("native-import.completed", {
+        frameCount: index.frameCount,
+        durationMs: info.durationMs,
+        width: info.width,
+        height: info.height,
+        hasAudio: info.hasAudio,
+        indexVerified: index.indexVerified,
+        savedAssetCount: savedAssetIds.length,
+      });
       set({
         sources: [...get().sources, legacySource],
         videoSources: [...get().videoSources, videoSource],
@@ -541,14 +620,30 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       return sourceId;
     } catch (error) {
+      recordDiagnosticError("native-import.failed", error, {
+        stage: importStage,
+        selectedVideo: selectedUri !== null,
+        savedAssetCount: savedAssetIds.length,
+      });
       await idbBatch(
         savedAssetIds.map((assetId) => ({
           kind: "delete" as const,
           store: "frameAssets",
           key: assetId,
         })),
-      ).catch(() => undefined);
-      if (selectedUri) await FrameExtractor.deleteVideoData(selectedUri).catch(() => undefined);
+      ).catch((cleanupError) => {
+        recordDiagnosticError("native-import.cleanup-indexeddb-failed", cleanupError, {
+          stage: importStage,
+          savedAssetCount: savedAssetIds.length,
+        });
+      });
+      if (selectedUri) {
+        await FrameExtractor.deleteVideoData(selectedUri).catch((cleanupError) => {
+          recordDiagnosticError("native-import.cleanup-native-files-failed", cleanupError, {
+            stage: importStage,
+          });
+        });
+      }
       set({
         frameAssets: get().frameAssets.filter((asset) => !savedAssetIds.includes(asset.id)),
         busy: null,
@@ -556,7 +651,11 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       throw error;
     } finally {
-      await progressHandle?.remove().catch(() => undefined);
+      await progressHandle?.remove().catch((cleanupError) => {
+        recordDiagnosticWarning("native-import.progress-listener-cleanup-failed", {
+          message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      });
     }
   },
   deleteSource: async (id) => {

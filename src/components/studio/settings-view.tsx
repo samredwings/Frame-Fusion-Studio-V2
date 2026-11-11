@@ -1,7 +1,12 @@
 import { useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, FileText, Trash2 } from "lucide-react";
 import { useStudio } from "@/lib/studio/store";
+import { getDiagnosticReport, recordDiagnosticError } from "@/lib/diagnostics";
+import { FrameExtractor } from "@/lib/native/frame-extractor";
 import type { ProjectStatus } from "@/lib/studio/types";
 import { Shell } from "@/components/studio/shell";
 import { Button, Field, Select, TextArea, TextInput, formatBytes } from "@/components/studio/ui";
@@ -21,6 +26,51 @@ export function SettingsView({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<ProjectStatus>(project?.status ?? "draft");
   const [armed, setArmed] = useState(false);
   const [synced, setSynced] = useState(project?.id ?? "");
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState("");
+
+  async function exportDiagnostics() {
+    setExportingDiagnostics(true);
+    setDiagnosticsStatus("");
+    try {
+      const nativeLog =
+        Capacitor.getPlatform() === "android"
+          ? (await FrameExtractor.getNativeDiagnostics()).text
+          : undefined;
+      const report = getDiagnosticReport(nativeLog);
+      if (Capacitor.getPlatform() === "android") {
+        const filename = "Frame-Fusion-Studio-diagnostics-" +
+          new Date().toISOString().replace(/[:.]/g, "-") + ".txt";
+        const file = await Filesystem.writeFile({
+          path: filename,
+          data: report,
+          directory: Directory.Cache,
+          encoding: Encoding.UTF8,
+        });
+        await Share.share({
+          title: "Frame Fusion Studio diagnostics",
+          text: "Import diagnostics from the Android debug build.",
+          url: file.uri,
+          dialogTitle: "Share diagnostic log",
+        });
+      } else {
+        const url = window.URL.createObjectURL(new Blob([report], { type: "text/plain;charset=utf-8" }));
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "Frame-Fusion-Studio-diagnostics.txt";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      }
+      setDiagnosticsStatus("Diagnostic log prepared. Choose ChatGPT or email from the share sheet.");
+    } catch (error) {
+      recordDiagnosticError("diagnostics.export-failed", error);
+      setDiagnosticsStatus(error instanceof Error ? error.message : "Could not export diagnostics.");
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  }
 
   if (project && synced !== project.id) {
     setSynced(project.id);
@@ -98,6 +148,21 @@ export function SettingsView({ projectId }: { projectId: string }) {
             </div>
           ))}
           {!mine.length ? <p className="text-sm text-muted">No sources yet.</p> : null}
+        </section>
+
+        <section className="mt-8 rounded-lg border border-line bg-surface p-4">
+          <div className="flex items-center gap-2">
+            <FileText className="size-4 text-amber" aria-hidden="true" />
+            <h2 className="font-display text-lg">Diagnostics</h2>
+          </div>
+          <p className="mt-1 text-sm text-muted">
+            Export saved import steps, error details, and native Android exceptions. Video content and private media URIs are excluded.
+          </p>
+          <Button className="mt-3" disabled={exportingDiagnostics} onClick={() => void exportDiagnostics()}>
+            <FileText className="size-4" aria-hidden="true" />
+            {exportingDiagnostics ? "Preparing diagnostic log…" : "Export diagnostic log"}
+          </Button>
+          {diagnosticsStatus ? <p className="mt-2 text-xs text-muted" role="status">{diagnosticsStatus}</p> : null}
         </section>
 
         <section className="mt-8 rounded-lg border border-danger/40 p-4">
