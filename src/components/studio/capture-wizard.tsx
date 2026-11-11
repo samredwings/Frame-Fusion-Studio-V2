@@ -115,4 +115,70 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
 
       <div className="grid grid-cols-2 gap-2" role="group" aria-label="Choose extraction method">
         <button type="button" aria-pressed={method === "manual"} disabled={isExtracting} onClick={() => setMethod("manual")} className={`capture-method-card ${method === "manual" ? "is-active" : ""}`}>
-          <span cla
+          <span className="grid size-10 place-items-center rounded-xl bg-surface-2"><Hand className="size-5" /></span>
+          <span className="min-w-0 text-left"><strong>Manual range</strong><small>Choose exact start and end points</small></span>
+        </button>
+        <button type="button" aria-pressed={method === "interval"} disabled={isExtracting} onClick={() => setMethod("interval")} className={`capture-method-card ${method === "interval" ? "is-active" : ""}`}>
+          <span className="grid size-10 place-items-center rounded-xl bg-surface-2"><Clock3 className="size-5" /></span>
+          <span className="min-w-0 text-left"><strong>Time interval</strong><small>Capture at a fixed time cadence</small></span>
+        </button>
+      </div>
+
+      {method === "interval" ? (
+        <div className="capture-settings rounded-2xl border border-line bg-surface px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="capture-interval" className="text-sm font-medium">Capture interval</label>
+            <strong className="font-mono text-sm text-cyan">{intervalMs} ms</strong>
+          </div>
+          <input id="capture-interval" type="range" min={200} max={5_000} step={100} value={intervalMs} onChange={(event) => setIntervalMs(Number(event.target.value))} disabled={isExtracting} className="mt-3 h-8 w-full accent-cyan" />
+          <div className="flex justify-between text-[10px] text-muted"><span>200 ms · denser</span><span>5 s · fewer frames</span></div>
+        </div>
+      ) : (
+        <p className="text-xs leading-5 text-muted">Move the left and right handles to mark the exact section. Manual mode extracts each original frame inside every saved range.</p>
+      )}
+
+      <div className="capture-range-card rounded-2xl border border-line bg-surface p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div><p className="text-sm font-semibold">Select a time range</p><p className="text-[11px] text-muted">Drag either handle to refine the segment</p></div>
+          <span className="rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[10px] text-muted">{formatTime(draftEnd - draftStart)}</span>
+        </div>
+        <div className="capture-dual-range mt-4" style={{ "--capture-start": `${(draftStart / durationMs) * 100}%`, "--capture-end": `${(draftEnd / durationMs) * 100}%` } as React.CSSProperties}>
+          <div className="capture-range-track" />
+          <div className="capture-range-selected" />
+          <input aria-label="Range start time" type="range" min={0} max={durationMs} step={10} value={draftStart} onChange={(event) => updateStart(Number(event.target.value))} disabled={isExtracting} className="capture-range-input capture-range-start" />
+          <input aria-label="Range end time" type="range" min={0} max={durationMs} step={10} value={draftEnd} onChange={(event) => updateEnd(Number(event.target.value))} disabled={isExtracting} className="capture-range-input capture-range-end" />
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2 font-mono text-[11px] text-cyan"><span>{formatTime(draftStart)}</span><span>{formatTime(draftEnd)}</span></div>
+        <Button tone="line" className="mt-3 w-full" disabled={isExtracting || ranges.length >= 25} onClick={addRange}><Plus className="size-4" />Add this range</Button>
+      </div>
+
+      <div className="rounded-2xl border border-line bg-surface p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div><p className="text-sm font-semibold">Saved ranges</p><p className="text-[11px] text-muted">Add more than one section from this same video</p></div>
+          <span className="rounded-full bg-surface-2 px-2.5 py-1 font-mono text-[10px] text-muted">{ranges.length}/25</span>
+        </div>
+        {ranges.length ? (
+          <ul className="mt-3 space-y-2">
+            {ranges.map((range, index) => (
+              <li key={range.id} className="flex min-h-11 items-center gap-2 rounded-xl bg-surface-2 px-3 py-2">
+                <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-cyan-dim font-mono text-[10px] text-cyan">{String(index + 1).padStart(2, "0")}</span>
+                <span className="min-w-0 flex-1 font-mono text-[11px]">{formatTime(range.startMs)} <span className="text-muted">→</span> {formatTime(range.endMs)}</span>
+                <button type="button" aria-label={`Remove range ${index + 1}`} disabled={isExtracting} onClick={() => removeRange(range.id)} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface hover:text-danger disabled:opacity-40"><Trash2 className="size-4" /></button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="mt-3 rounded-xl bg-surface-2 px-3 py-3 text-xs text-muted">No ranges saved yet. Select a section above and add it here.</p>}
+        <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
+          <span className="text-xs text-muted">Estimated frames</span>
+          <strong className="font-mono text-sm">{estimatedFrames.toLocaleString()}</strong>
+        </div>
+      </div>
+
+      {busy ? <p role="status" className="rounded-xl bg-cyan-dim px-3 py-2 text-xs text-cyan">{busy}</p> : null}
+      <div className="flex shrink-0 gap-2">
+        <Button tone="quiet" className="flex-1" disabled={isExtracting} onClick={onCancel}>Cancel</Button>
+        <Button className="flex-[2]" disabled={!ranges.length || isExtracting} onClick={beginExtraction}><Scissors className="size-4" />{isExtracting ? "Extracting…" : `Extract ${estimatedFrames.toLocaleString()} frames`}</Button>
+      </div>
+    </section>
+  );
+}
