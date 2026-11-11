@@ -597,9 +597,21 @@ public class FrameExtractorPlugin extends Plugin {
         try {
             retriever.setDataSource(getContext(), uri);
             boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-            bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
-                retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-            if (bitmap == null) throw new IllegalStateException("Android could not decode frame " + frameIndex + ".");
+            if (exact) {
+                try {
+                    bitmap = retriever.getFrameAtIndex(frameIndex);
+                } catch (IllegalArgumentException indexError) {
+                    // MediaExtractor's sample index and MediaMetadataRetriever's frame index
+                    // are not guaranteed to enumerate every codec/container identically.
+                    Log.w(TAG, "Frame index " + frameIndex + " is not accepted by the retriever; falling back to its indexed presentation timestamp.", indexError);
+                    exact = false;
+                }
+            }
+            if (bitmap == null) {
+                bitmap = retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+                exact = false;
+            }
+            if (bitmap == null) throw new IllegalStateException("Android could not decode frame " + frameIndex + " at " + pts + "us.");
 
             if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
                 int newHeight = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
@@ -654,9 +666,20 @@ public class FrameExtractorPlugin extends Plugin {
             for (int frameIndex = start; frameIndex <= end; frameIndex++) {
                 long pts = readPts(index, frameIndex);
                 boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
-                    retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + ".");
+                Bitmap bitmap = null;
+                if (exact) {
+                    try {
+                        bitmap = retriever.getFrameAtIndex(frameIndex);
+                    } catch (IllegalArgumentException indexError) {
+                        Log.w(TAG, "Frame index " + frameIndex + " is not accepted by the retriever; using the indexed presentation timestamp.", indexError);
+                        exact = false;
+                    }
+                }
+                if (bitmap == null) {
+                    bitmap = retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+                    exact = false;
+                }
+                if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + " at " + pts + "us.");
                 try {
                     if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
                         int h = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
