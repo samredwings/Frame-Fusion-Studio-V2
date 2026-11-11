@@ -158,6 +158,24 @@ export type RepairStatus = "draft" | "ready" | "rendering" | "completed" | "fail
 export type MaskShape = "brush" | "ellipse" | "rectangle" | "lasso";
 export type BlendMode = "normal" | "overlay" | "soft-light" | "multiply" | "screen";
 
+export interface VideoTrackMetadata {
+  trackIndex: number;
+  mimeType: string;
+  durationUs?: number;
+  bitRate?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  profile?: number;
+  level?: number;
+  colorStandard?: number;
+  colorTransfer?: number;
+  colorRange?: number;
+  language?: string;
+}
+
 export interface VideoMetadata {
   uri: string;
   filename: string;
@@ -167,6 +185,7 @@ export interface VideoMetadata {
   metadataFrameCount: number;
   nominalFrameRate: number;
   averageFrameRate: number;
+  captureFrameRate?: number;
   width: number;
   height: number;
   rotation: 0 | 90 | 180 | 270;
@@ -177,6 +196,10 @@ export interface VideoMetadata {
   audioChannels?: number;
   audioSampleRate?: number;
   audioBitrate?: number;
+  /** Container tags exposed by Android, including capture date/location when present. */
+  embeddedMetadata?: Record<string, string>;
+  /** Technical properties read from each MediaExtractor track. */
+  tracks?: VideoTrackMetadata[];
 }
 
 export interface VideoSource {
@@ -190,7 +213,10 @@ export interface VideoSource {
   frameCount: number;
   nominalFrameRate: number;
   averageFrameRate: number;
+  captureFrameRate?: number;
   hasVariableFrameRate: boolean;
+  embeddedMetadata?: Record<string, string>;
+  tracks?: VideoTrackMetadata[];
   frameIndexId: string;
   frameIndexVerified: boolean;
   width: number;
