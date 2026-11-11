@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
+import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
   Columns2,
   Download,
   Film,
+  FileText,
   Scan,
   ScanFace,
   Settings2,
@@ -16,6 +19,8 @@ import {
 } from "lucide-react";
 import { idbDel, idbPut } from "@/lib/studio/idb";
 import { useStudio } from "@/lib/studio/store";
+import { getDiagnosticReport, recordDiagnosticError } from "@/lib/diagnostics";
+import { FrameExtractor } from "@/lib/native/frame-extractor";
 import { TOOLS, type ToolId } from "@/lib/studio/types";
 import { Shell } from "@/components/studio/shell";
 import { BlurTool } from "@/components/studio/blur-tool";
@@ -45,6 +50,7 @@ export function Workspace({
   sourceId?: string;
 }) {
   const navigate = useNavigate();
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const ready = useStudio((state) => state.ready);
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
@@ -55,6 +61,43 @@ export function Workspace({
   const importNativeVideo = useStudio((state) => state.importNativeVideo);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const deleteFrame = useStudio((state) => state.deleteFrame);
+  async function exportDiagnostics() {
+    setExportingDiagnostics(true);
+    try {
+      const nativeLog = Capacitor.getPlatform() === "android"
+        ? (await FrameExtractor.getNativeDiagnostics()).text
+        : undefined;
+      const report = getDiagnosticReport(nativeLog);
+      const filename = "Frame-Fusion-Studio-diagnostics-" +
+        new Date().toISOString().replace(/[:.]/g, "-") + ".txt";
+      if (Capacitor.getPlatform() === "android") {
+        const file = await Filesystem.writeFile({
+          path: filename, data: report, directory: Directory.Cache, encoding: Encoding.UTF8,
+        });
+        await Share.share({
+          title: "Frame Fusion Studio diagnostics",
+          text: "Import diagnostics from the Android debug build.",
+          url: file.uri,
+          dialogTitle: "Share diagnostic log",
+        });
+      } else {
+        const url = window.URL.createObjectURL(new Blob([report], { type: "text/plain;charset=utf-8" }));
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      }
+    } catch (error) {
+      recordDiagnosticError("diagnostics.export-failed", error);
+      useStudio.setState({ error: error instanceof Error ? error.message : "Could not export diagnostics." });
+    } finally {
+      setExportingDiagnostics(false);
+    }
+  }
+
   const project = projects.find((item) => item.id === projectId);
   const mine = sources.filter((source) => source.projectId === projectId);
   const source =
@@ -311,15 +354,29 @@ export function Workspace({
               LOCAL PROJECT
             </p>
           </div>
-          <Link
-            to="/projects/$projectId/settings"
-            params={{ projectId }}
-            search={{ tool, source: source?.id }}
+          <button
+            type="button"
+            aria-label="Export diagnostic log"
+            title="Export diagnostic log"
+            disabled={exportingDiagnostics}
+            onClick={() => void exportDiagnostics()}
+            className="grid size-10 shrink-0 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+          >
+            <FileText className="size-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
             aria-label="Project settings"
+            title="Project settings"
+            onClick={() => void navigate({
+              to: "/projects/$projectId/settings",
+              params: { projectId },
+              search: { tool, source: source?.id },
+            })}
             className="grid size-10 shrink-0 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg"
           >
             <Settings2 className="size-4" aria-hidden="true" />
-          </Link>
+          </button>
         </div>
       }
     >
