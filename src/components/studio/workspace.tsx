@@ -153,7 +153,8 @@ export function Workspace({
   const [frameIndex, setFrameIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const selectedTimeUs = sourceFrameTimesUs[frameIndex] ?? 0;
-  const selectedTimeMs = selectedTimeUs / 1000;
+  const timelineStartUs = sourceFrameTimesUs[0] ?? 0;
+  const selectedTimeMs = Math.max(0, (selectedTimeUs - timelineStartUs) / 1000);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
@@ -523,7 +524,7 @@ export function Workspace({
                       setPlaying(false);
                       setFrameIndex(nearestFrameIndexForTime(
                         sourceFrameTimesUs,
-                        Math.min(source.durationMs, Math.max(0, seconds * 1000)) * 1000,
+                        timelineStartUs + Math.min(source.durationMs, Math.max(0, seconds * 1000)) * 1000,
                       ));
                     }
                   }}
@@ -551,7 +552,7 @@ export function Workspace({
               value={Math.min(Math.max(0, source.durationMs), selectedTimeMs)}
               onChange={(event) => {
                 setPlaying(false);
-                setFrameIndex(nearestFrameIndexForTime(sourceFrameTimesUs, Number(event.target.value) * 1000));
+                setFrameIndex(nearestFrameIndexForTime(sourceFrameTimesUs, timelineStartUs + Number(event.target.value) * 1000));
               }}
               className="mt-1.5 h-5 w-full cursor-pointer accent-amber"
             />
