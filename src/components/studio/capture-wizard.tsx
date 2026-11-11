@@ -115,28 +115,4 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
 
       <div className="grid grid-cols-2 gap-2" role="group" aria-label="Choose extraction method">
         <button type="button" aria-pressed={method === "manual"} disabled={isExtracting} onClick={() => setMethod("manual")} className={`capture-method-card ${method === "manual" ? "is-active" : ""}`}>
-          <span className="grid size-10 place-items-center rounded-xl bg-surface-2"><Hand className="size-5" /></span>
-          <span className="min-w-0 text-left"><strong>Manual range</strong><small>Choose exact start and end points</small></span>
-        </button>
-        <button type="button" aria-pressed={method === "interval"} disabled={isExtracting} onClick={() => setMethod("interval")} className={`capture-method-card ${method === "interval" ? "is-active" : ""}`}>
-          <span className="grid size-10 place-items-center rounded-xl bg-surface-2"><Clock3 className="size-5" /></span>
-          <span className="min-w-0 text-left"><strong>Time interval</strong><small>Capture at a fixed time cadence</small></span>
-        </button>
-      </div>
-
-      {method === "interval" ? (
-        <div className="capture-settings rounded-2xl border border-line bg-surface px-3 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <label htmlFor="capture-interval" className="text-sm font-medium">Capture interval</label>
-            <strong className="font-mono text-sm text-cyan">{intervalMs} ms</strong>
-          </div>
-          <input id="capture-interval" type="range" min={200} max={5_000} step={100} value={intervalMs} onChange={(event) => setIntervalMs(Number(event.target.value))} disabled={isExtracting} className="mt-3 h-8 w-full accent-cyan" />
-          <div className="flex justify-between text-[10px] text-muted"><span>200 ms · denser</span><span>5 s · fewer frames</span></div>
-        </div>
-      ) : (
-        <p className="text-xs leading-5 text-muted">Move the left and right handles to mark the exact section. Manual mode extracts each original frame inside every saved range.</p>
-      )}
-
-      <div className="capture-range-card rounded-2xl border border-line bg-surface p-3">
-        <div className="flex items-center justify-between gap-3">
-          <div><p className="text-sm font-semibold">Select a time range</p><p className="text-[11px] text-muted
+          <span cla

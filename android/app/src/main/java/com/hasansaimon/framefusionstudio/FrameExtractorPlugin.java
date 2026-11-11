@@ -137,42 +137,4 @@ public class FrameExtractorPlugin extends Plugin {
         execute(call, () -> inspectVideo(Uri.parse(uriText)));
     }
 
-    private JSObject inspectVideo(Uri uri) throws Exception {
-        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
-        MediaExtractor extractor = new MediaExtractor();
-        try {
-            retriever.setDataSource(getContext(), uri);
-            extractor.setDataSource(getContext(), uri, null);
-
-            long durationMs = parseLong(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
-            int rotation = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION));
-            int width = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
-            int height = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
-            int bitrate = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE));
-
-            int metadataFrameCount = 0;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                metadataFrameCount = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT));
-            }
-
-            String videoMime = "";
-            float nominalFps = 0f;
-            int videoTrack = -1;
-            boolean hasAudio = false;
-            String audioMime = null;
-            int audioChannels = 0;
-            int audioSampleRate = 0;
-            int audioBitrate = 0;
-            long trackDurationUs = durationMs * 1000L;
-
-            for (int i = 0; i < extractor.getTrackCount(); i++) {
-                MediaFormat format = extractor.getTrackFormat(i);
-                String mime = format.getString(MediaFormat.KEY_MIME);
-                if (mime == null) continue;
-
-                if (mime.startsWith("video/") && videoTrack < 0) {
-                    videoTrack = i;
-                    videoMime = mime;
-                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                        nominalFps = format.getInteger(MediaFormat.KEY_FRAME_RATE);
-   
+    private JSObject insp

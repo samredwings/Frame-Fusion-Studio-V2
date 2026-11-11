@@ -35,19 +35,4 @@ This is the project's working phase plan and status ledger. Percentages are engi
 ### User-directed video capture workflow (implemented on this branch)
 
 - A dedicated capture screen uses a large playable video preview. Android `content://` picker URIs are served through Capacitor's same-origin content route so WebView media playback does not attempt to load a blocked local URI or copy the whole source clip into app storage.
-- The former fixed-FPS dropdown is removed from the Android import experience. The user chooses **Manual range** or **Time interval** before extraction.
-- **Manual range** uses independent start/end slider handles and retains every indexed source frame whose presentation timestamp falls inside each saved range.
-- **Time interval** defaults to **200 ms** and is adjustable from 200 ms to 5 seconds. It resolves each target against the actual presentation timestamp index (including variable-frame-rate clips), not an assumed nominal FPS.
-- Up to 25 ranges can be saved for one source video. The selected ranges are persisted on `VideoSource`; every extracted `FrameAsset` carries its range/sequence ID. Duplicate frame indexes across overlapping ranges are extracted once.
-- Native extraction transfers no more than 250 selected indexes per bridge call. The same source clip can be sampled in separate sessions; multiple ranges in one session remain grouped under one imported source.
-- Emulator validation: the 8-second, 200-frame synthetic clip loaded in Android WebView (`readyState=4`, duration 8s, no media error); two manual 1-second ranges produced 51 frames; a 1-second interval range at the default 200ms cadence produced 6 frames. This is emulator coverage, not RMX5303 hardware acceptance.
-
-### Phase 1 acceptance checklist
-
-- [x] PR #3 merged into `main`.
-- [x] Android import path routes indexed frame extraction through the native plugin; no browser canvas frames are used for Android imports.
-- [x] Android native extraction requests original dimensions (`targetWidth: 0`) and has no total-duration/six-second cap. Native plugin per-call batches are limited to 250 frames for memory/control, not by video duration.
-- [x] The Android picker opens a large playback preview before extraction and the former fixed-FPS dropdown is removed.
-- [x] Manual mode supports independent start/end handles and multiple saved time ranges in one source session.
-- [x] Interval mode defaults to 200 ms and samples against source PTS; the interval is user adjustable.
-- [x] Android selected-frame batches extract only c
+- The former fixed-FPS dropdown is removed from the Android import experience. The user chooses **Manual range** or *
