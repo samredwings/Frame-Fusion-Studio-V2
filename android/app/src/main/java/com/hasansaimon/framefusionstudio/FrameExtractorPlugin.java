@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
@@ -40,10 +41,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 
 /**
- * Native foundation for exact video inspection and full-resolution frame extraction.
- *
- * Deliberately does not claim to implement watermark inpainting or video reconstruction.
- * Those require separate, tested processing pipelines.
+ * Native video inspection, full-resolution frame extraction and conservative
+ * heuristic removal primitives. Repair uses a naive diffusion approximation;
+ * it is not OpenCV inpainting, optical flow, OCR, AI/logo recognition or MP4
+ * reconstruction.
  */
 @CapacitorPlugin(name = "FrameExtractor")
 public class FrameExtractorPlugin extends Plugin {
@@ -51,6 +52,7 @@ public class FrameExtractorPlugin extends Plugin {
     private static final int MAX_PAGE_SIZE = 5000;
     private static final int MAX_RANGE_SIZE = 250;
     private static final int DEFAULT_THUMB_WIDTH = 160;
+    private static final long MAX_REPAIR_PATCH_PIXELS = 1_500_000L;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "FrameFusion-Media");
@@ -535,6 +537,92 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void extractFrameSelection(PluginCall call) {
+        String uriText = call.getString("uri");
+        JSArray requested = call.getArray("frameIndexes");
+        int targetWidth = call.getInt("targetWidth", 0);
+        int quality = clamp(call.getInt("quality", 95), 1, 100);
+        if (uriText == null || requested == null || requested.length() < 1
+            || requested.length() > MAX_RANGE_SIZE || targetWidth < 0) {
+            call.reject("Provide a video URI and 1–" + MAX_RANGE_SIZE + " selected frame indexes.");
+            return;
+        }
+        final int[] indexes = new int[requested.length()];
+        try {
+            for (int i = 0; i < requested.length(); i++) {
+                indexes[i] = requested.getInt(i);
+                if (indexes[i] < 0 || (i > 0 && indexes[i] <= indexes[i - 1])) {
+                    call.reject("Selected frame indexes must be unique, non-negative and ascending.");
+                    return;
+                }
+            }
+        } catch (org.json.JSONException error) {
+            call.reject("Selected frame indexes must be integers.");
+            return;
+        }
+        execute(call, () -> extractSelection(Uri.parse(uriText), indexes, targetWidth, quality));
+    }
+
+    private JSObject extractSelection(Uri uri, int[] indexes, int targetWidth, int quality) throws Exception {
+        String indexId = sha256(uri.toString());
+        File indexFile = getIndexFile(indexId);
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        JSArray frames = new JSArray();
+        try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
+            int total = index.readInt();
+            for (int frameIndex : indexes) {
+                if (frameIndex >= total) throw new IllegalArgumentException("A selected frame is outside the indexed video.");
+            }
+            retriever.setDataSource(getContext(), uri);
+            File outputDir = getOutputDir("frames", indexId);
+            for (int position = 0; position < indexes.length; position++) {
+                int frameIndex = indexes[position];
+                long pts = readPts(index, frameIndex);
+                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex)
+                    : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (bitmap == null) throw new IllegalStateException("Could not decode selected frame " + frameIndex + ".");
+                try {
+                    if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
+                        int h = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
+                        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, h, true);
+                        if (scaled != bitmap) {
+                            bitmap.recycle();
+                            bitmap = scaled;
+                        }
+                    }
+                    File output = new File(outputDir, String.format(Locale.US, "frame-%09d.jpg", frameIndex));
+                    writeBitmap(bitmap, output, quality);
+                    JSObject frame = new JSObject();
+                    frame.put("frameIndex", frameIndex);
+                    frame.put("presentationTimeUs", pts);
+                    frame.put("outputPath", output.getAbsolutePath());
+                    frame.put("width", bitmap.getWidth());
+                    frame.put("height", bitmap.getHeight());
+                    frame.put("fileSize", output.length());
+                    frame.put("exactFrameIndex", exact);
+                    frames.put(frame);
+                } finally {
+                    if (!bitmap.isRecycled()) bitmap.recycle();
+                }
+                JSObject progress = new JSObject();
+                progress.put("operationId", indexId + ":selection-" + indexes[0] + "-" + indexes[indexes.length - 1]);
+                progress.put("currentFrame", position + 1);
+                progress.put("totalFrames", indexes.length);
+                progress.put("progressPercent", Math.round((position + 1) * 100f / indexes.length));
+                notifyListeners("extractProgress", progress);
+            }
+        } finally {
+            retriever.release();
+        }
+        JSObject value = new JSObject();
+        value.put("indexId", indexId);
+        value.put("extractedCount", frames.length());
+        value.put("frames", frames);
+        return value;
+    }
+
+    @PluginMethod
     public void generateThumbnails(PluginCall call) {
         String uriText = call.getString("uri");
         int requestedCount = call.getInt("count", 100);
@@ -602,6 +690,412 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void detectWatermark(PluginCall call) {
+        String uri = call.getString("uri");
+        int frameIndex = call.getInt("frameIndex", -1);
+        JSArray methodsArray = call.getArray("detectionMethods");
+        if (uri == null || uri.trim().isEmpty() || frameIndex < 0) {
+            call.reject("uri and a non-negative frameIndex are required.");
+            return;
+        }
+        try {
+            String[] methods = new String[methodsArray == null ? 0 : methodsArray.length()];
+            for (int i = 0; i < methods.length; i++) methods[i] = methodsArray.getString(i);
+            execute(call, () -> detectWatermark(uri, frameIndex, methods));
+        } catch (Exception error) {
+            call.reject("Could not read detection methods.", error);
+        }
+    }
+
+    private JSObject detectWatermark(String uriText, int frameIndex, String[] detectionMethods) throws Exception {
+        Uri uri = Uri.parse(uriText);
+        String indexId = sha256(uriText);
+        File indexFile = getIndexFile(indexId);
+        Bitmap bitmap;
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
+            int count = index.readInt();
+            if (frameIndex < 0 || frameIndex >= count) throw new IllegalArgumentException("Frame index is outside the timestamp map.");
+            long pts = readPts(index, frameIndex);
+            retriever.setDataSource(getContext(), uri);
+            bitmap = getFrameAtIndex(retriever, frameIndex, pts);
+            if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + " for detection.");
+        } finally {
+            retriever.release();
+        }
+
+        JSArray detections = new JSArray();
+        JSArray unsupported = new JSArray();
+        try {
+            boolean staticScanRequested = detectionMethods == null || detectionMethods.length == 0;
+            if (detectionMethods != null) {
+                for (String method : detectionMethods) {
+                    if ("static-region".equals(method)) staticScanRequested = true;
+                    else if (method != null && !method.trim().isEmpty()) unsupported.put(method);
+                }
+            }
+            if (staticScanRequested) {
+                // Conservative candidate windows only. This compares edge density
+                // in likely overlay areas with the surrounding border. It does not
+                // identify logos, read text, or provide a trained detection model.
+                double[][] candidates = new double[][] {
+                    {0.02, 0.02, 0.30, 0.16},
+                    {0.68, 0.02, 0.30, 0.16},
+                    {0.02, 0.82, 0.36, 0.16},
+                    {0.62, 0.82, 0.36, 0.16},
+                    {0.30, 0.84, 0.40, 0.14}
+                };
+                for (int i = 0; i < candidates.length; i++) {
+                    double[] bounds = candidates[i];
+                    double score = measureOverlayContrast(bitmap, bounds);
+                    if (score < 0.38) continue;
+                    JSObject detection = new JSObject();
+                    detection.put("id", sha256(uriText + ":" + frameIndex + ":" + i).substring(0, 24));
+                    detection.put("type", "unknown");
+                    detection.put("detectionMethod", "static-region");
+                    JSObject rect = new JSObject();
+                    rect.put("x", bounds[0]);
+                    rect.put("y", bounds[1]);
+                    rect.put("width", bounds[2]);
+                    rect.put("height", bounds[3]);
+                    detection.put("bounds", rect);
+                    detection.put("confidence", score);
+                    detection.put("detectedAtFrameIndex", frameIndex);
+                    detection.put("isPersistent", false);
+                    detections.put(detection);
+                }
+            }
+        } finally {
+            if (!bitmap.isRecycled()) bitmap.recycle();
+        }
+        JSObject result = new JSObject();
+        result.put("uri", uriText);
+        result.put("frameIndex", frameIndex);
+        result.put("detections", detections);
+        result.put("unsupportedMethods", unsupported);
+        result.put("warning", "Heuristic static-region candidates only. No OCR, ML, logo recognition or persistence tracking is implemented.");
+        return result;
+    }
+
+    private double measureOverlayContrast(Bitmap bitmap, double[] normalized) {
+        int left = clamp((int) Math.floor(normalized[0] * bitmap.getWidth()), 0, bitmap.getWidth() - 1);
+        int top = clamp((int) Math.floor(normalized[1] * bitmap.getHeight()), 0, bitmap.getHeight() - 1);
+        int right = clamp((int) Math.ceil((normalized[0] + normalized[2]) * bitmap.getWidth()), left + 1, bitmap.getWidth());
+        int bottom = clamp((int) Math.ceil((normalized[1] + normalized[3]) * bitmap.getHeight()), top + 1, bitmap.getHeight());
+        int width = right - left;
+        int height = bottom - top;
+        int[] pixels = new int[width * height];
+        bitmap.getPixels(pixels, 0, width, left, top, width, height);
+        double edgeInside = 0;
+        long edgeCountInside = 0;
+        for (int y = 1; y < height; y++) {
+            for (int x = 1; x < width; x++) {
+                int a = luminance(pixels[y * width + x]);
+                int b = luminance(pixels[y * width + x - 1]);
+                int c = luminance(pixels[(y - 1) * width + x]);
+                edgeInside += (Math.abs(a - b) + Math.abs(a - c)) / 510.0;
+                edgeCountInside++;
+            }
+        }
+        if (edgeCountInside == 0) return 0;
+        double density = edgeInside / edgeCountInside;
+        // Confidence is deliberately capped below a level that could be mistaken
+        // for a statistically validated detector score.
+        return Math.min(0.64, Math.max(0.0, 0.30 + density * 0.48));
+    }
+
+    private int luminance(int color) {
+        return (int) (0.2126 * ((color >> 16) & 0xff) + 0.7152 * ((color >> 8) & 0xff) + 0.0722 * (color & 0xff));
+    }
+
+    @PluginMethod
+    public void removeWatermark(PluginCall call) {
+        String uri = call.getString("uri");
+        String watermarkId = call.getString("watermarkId");
+        JSObject bounds = call.getObject("bounds");
+        int start = call.getInt("startFrameIndex", -1);
+        int end = call.getInt("endFrameIndex", -1);
+        JSObject settings = call.getObject("settings");
+        if (uri == null || watermarkId == null || bounds == null || settings == null || start < 0 || end < start) {
+            call.reject("uri, watermarkId, bounds, settings and a valid frame range are required.");
+            return;
+        }
+        String operationId = "watermark-" + watermarkId + "-" + System.currentTimeMillis();
+        executeRemoval(call, operationId, () -> {
+            JSObject result = removeWatermark(uri, operationId, bounds, start, end, settings);
+            result.put("watermarkId", watermarkId);
+            return result;
+        });
+    }
+
+    private JSObject removeWatermark(String uri, String operationId, JSObject bounds,
+                                     int startFrameIndex, int endFrameIndex, JSObject settings) throws Exception {
+        return removeVideoRegion(uri, operationId, bounds, startFrameIndex, endFrameIndex, settings, "watermark", null);
+    }
+
+    @PluginMethod
+    public void removeText(PluginCall call) {
+        String uri = call.getString("uri");
+        JSObject bounds = call.getObject("bounds");
+        int start = call.getInt("startFrameIndex", -1);
+        int end = call.getInt("endFrameIndex", -1);
+        JSObject settings = call.getObject("settings");
+        String detectionMethod = call.getString("detectionMethod", "manual");
+        if (uri == null || bounds == null || settings == null || start < 0 || end < start) {
+            call.reject("uri, bounds, settings and a valid frame range are required.");
+            return;
+        }
+        String operationId = "text-" + System.currentTimeMillis();
+        executeRemoval(call, operationId, () -> removeText(uri, bounds, start, end, settings, detectionMethod, operationId));
+    }
+
+    private JSObject removeText(String uri, JSObject bounds, int startFrameIndex, int endFrameIndex,
+                                JSObject settings, String detectionMethod, String operationId) throws Exception {
+        JSObject result = removeVideoRegion(uri, operationId, bounds, startFrameIndex, endFrameIndex, settings, "text", detectionMethod);
+        result.put("detectionMethod", detectionMethod);
+        return result;
+    }
+
+    @PluginMethod
+    public void previewRemoval(PluginCall call) {
+        String uri = call.getString("uri");
+        String framePath = call.getString("framePath");
+        JSObject bounds = call.getObject("bounds");
+        String algorithm = call.getString("algorithm", "naive-diffusion");
+        String donorFramePath = call.getString("donorFramePath");
+        int feather = clamp(call.getInt("featherPx", 8), 0, 512);
+        int expansion = clamp(call.getInt("expansionPx", 4), 0, 512);
+        if (uri == null || uri.trim().isEmpty() || framePath == null || bounds == null) {
+            call.reject("uri, framePath and bounds are required.");
+            return;
+        }
+        String operationId = "preview-" + System.currentTimeMillis();
+        executeRemoval(call, operationId, () -> previewRemoval(uri, framePath, bounds, algorithm, donorFramePath, feather, expansion, operationId));
+    }
+
+    private JSObject previewRemoval(String uri, String framePath, JSObject bounds, String algorithm,
+                                    String donorFramePath, int featherPx, int expansionPx,
+                                    String operationId) throws Exception {
+        validateRemovalAlgorithm(algorithm);
+        Bitmap decoded = BitmapFactory.decodeFile(framePath);
+        if (decoded == null) throw new IllegalArgumentException("Could not decode the selected frame path.");
+        Bitmap target = MutableFrameBitmap.copyAndRecycle(decoded);
+        Bitmap donor = donorFramePath == null || donorFramePath.trim().isEmpty() ? null : BitmapFactory.decodeFile(donorFramePath);
+        if (donorFramePath != null && !donorFramePath.trim().isEmpty() && donor == null) {
+            target.recycle();
+            throw new IllegalArgumentException("Could not decode the donor frame path.");
+        }
+        try {
+            applyNaiveRemoval(target, bounds, algorithm, donor, null, null, featherPx, expansionPx);
+            String indexId = sha256(uri);
+            File output = RepairStoragePaths.previewFile(
+                getContext().getFilesDir(), indexId, sha256(operationId).substring(0, 16)
+            );
+            File previewDir = output.getParentFile();
+            if (previewDir == null || (!previewDir.exists() && !previewDir.mkdirs())) {
+                throw new IllegalStateException("Could not create the source-owned preview directory.");
+            }
+            writeBitmap(target, output, 95);
+            JSObject result = new JSObject();
+            result.put("operationId", operationId);
+            result.put("uri", uri);
+            result.put("previewPath", output.getAbsolutePath());
+            result.put("width", target.getWidth());
+            result.put("height", target.getHeight());
+            result.put("implementation", "naive-diffusion");
+            result.put("warning", "Preview uses naive spatial diffusion and optional same-coordinate donor blending; it is not OpenCV or motion-compensated repair.");
+            return result;
+        } finally {
+            if (donor != null && !donor.isRecycled()) donor.recycle();
+            if (!target.isRecycled()) target.recycle();
+        }
+    }
+
+    private JSObject removeVideoRegion(String uriText, String operationId, JSObject bounds,
+                                       int startFrameIndex, int endFrameIndex, JSObject settings,
+                                       String removalType, String detectionMethod) throws Exception {
+        Uri uri = Uri.parse(uriText);
+        String indexId = sha256(uriText);
+        File indexFile = getIndexFile(indexId);
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        int total = endFrameIndex - startFrameIndex + 1;
+        JSArray outputs = new JSArray();
+        Bitmap donor = null;
+        Bitmap previous = null;
+        int quality = clamp(settings.optInt("quality", 92), 1, 100);
+        int feather = clamp(settings.optInt("featherPx", 8), 0, 512);
+        int expansion = clamp(settings.optInt("expansionPx", 4), 0, 512);
+        int donorFrameIndex = settings.optInt("donorFrameIndex", -1);
+        String algorithm = settings.optString("algorithm", "naive-diffusion");
+        validateRemovalAlgorithm(algorithm);
+        try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
+            int frameCount = index.readInt();
+            RemovalFrameRange.validate(startFrameIndex, endFrameIndex, frameCount);
+            retriever.setDataSource(getContext(), uri);
+            if (donorFrameIndex >= 0) {
+                if (donorFrameIndex >= frameCount) throw new IllegalArgumentException("The donor frame index is outside the timestamp map.");
+                donor = getFrameAtIndex(retriever, donorFrameIndex, readPts(index, donorFrameIndex));
+                if (donor == null) throw new IllegalStateException("Could not decode donor frame " + donorFrameIndex + ".");
+            }
+            File baseDir = getOutputDir("repairs", indexId);
+            String safeId = sha256(operationId).substring(0, 16);
+            File operationDir = new File(baseDir, safeId);
+            if (!operationDir.exists() && !operationDir.mkdirs()) throw new IllegalStateException("Could not create the repair output directory.");
+
+            for (int frameIndex = startFrameIndex; frameIndex <= endFrameIndex; frameIndex++) {
+                long pts = readPts(index, frameIndex);
+                Bitmap current = getFrameAtIndex(retriever, frameIndex, pts);
+                if (current == null) throw new IllegalStateException("Could not decode frame " + frameIndex + " for removal.");
+                try {
+                    applyNaiveRemoval(current, bounds, algorithm, donor, previous, settings, feather, expansion);
+                    File output = new File(operationDir, String.format(Locale.US, "repair-%09d.jpg", frameIndex));
+                    writeBitmap(current, output, quality);
+                    JSObject frameResult = new JSObject();
+                    frameResult.put("frameIndex", frameIndex);
+                    frameResult.put("presentationTimeUs", pts);
+                    frameResult.put("outputPath", output.getAbsolutePath());
+                    outputs.put(frameResult);
+                    JSObject progress = new JSObject();
+                    progress.put("operationId", operationId);
+                    progress.put("removalType", removalType);
+                    progress.put("currentFrame", frameIndex - startFrameIndex + 1);
+                    progress.put("totalFrames", total);
+                    progress.put("progressPercent", Math.round((frameIndex - startFrameIndex + 1) * 100f / total));
+                    notifyListeners("removalProgress", progress);
+
+                    if (previous != null && !previous.isRecycled()) previous.recycle();
+                    previous = Bitmap.createBitmap(current);
+                } finally {
+                    if (!current.isRecycled()) current.recycle();
+                }
+            }
+        } finally {
+            if (previous != null && !previous.isRecycled()) previous.recycle();
+            if (donor != null && !donor.isRecycled()) donor.recycle();
+            retriever.release();
+        }
+        JSObject result = new JSObject();
+        result.put("operationId", operationId);
+        result.put("uri", uriText);
+        result.put("removalType", removalType);
+        result.put("startFrameIndex", startFrameIndex);
+        result.put("endFrameIndex", endFrameIndex);
+        result.put("outputs", outputs);
+        result.put("implementation", "naive-diffusion");
+        result.put("temporalBlend", settings.optDouble("temporalBlendRatio", 0.25) > 0);
+        result.put("warning", "Temporal blending uses the previous repaired frame at identical pixel coordinates only. No optical flow, OCR, OpenCV or source-video reconstruction is implemented.");
+        if (detectionMethod != null) result.put("detectionMethod", detectionMethod);
+        return result;
+    }
+
+    private void executeRemoval(PluginCall call, String operationId, NativeTask task) {
+        try {
+            worker.execute(() -> {
+                try {
+                    JSObject result = task.run();
+                    result.put("operationId", operationId);
+                    notifyListeners("removalComplete", result);
+                    call.resolve(result);
+                } catch (Exception error) {
+                    Log.e(TAG, "Native removal operation failed", error);
+                    JSObject event = new JSObject();
+                    event.put("operationId", operationId);
+                    event.put("message", error.getMessage() == null ? "Native removal operation failed." : error.getMessage());
+                    notifyListeners("removalError", event);
+                    call.reject(error.getMessage() == null ? "Native removal operation failed." : error.getMessage());
+                }
+            });
+        } catch (RejectedExecutionException error) {
+            JSObject event = new JSObject();
+            event.put("operationId", operationId);
+            event.put("message", "The media worker is shutting down.");
+            notifyListeners("removalError", event);
+            call.reject("The media worker is shutting down. Reopen the app and try again.");
+        }
+    }
+
+    private Bitmap getFrameAtIndex(MediaMetadataRetriever retriever, int frameIndex, long pts) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ? retriever.getFrameAtIndex(frameIndex)
+            : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+    }
+
+    private void validateRemovalAlgorithm(String algorithm) {
+        if (!"naive-diffusion".equals(algorithm) && !"donor-patch".equals(algorithm)) {
+            throw new IllegalArgumentException(
+                "Algorithm " + algorithm + " is not implemented in this build. Use naive-diffusion or donor-patch. OpenCV, texture synthesis and frame interpolation are not available."
+            );
+        }
+    }
+
+    private void applyNaiveRemoval(Bitmap target, JSObject bounds, String algorithm,
+                                   Bitmap donor, Bitmap temporal, JSObject settings,
+                                   int featherPx, int expansionPx) throws Exception {
+        int width = target.getWidth();
+        int height = target.getHeight();
+        double x = bounds.optDouble("x", 0d);
+        double y = bounds.optDouble("y", 0d);
+        double w = bounds.optDouble("width", bounds.optDouble("w", 0d));
+        double h = bounds.optDouble("height", bounds.optDouble("h", 0d));
+        if (!(w > 0d && h > 0d)) throw new IllegalArgumentException("Removal bounds must have positive width and height.");
+        int originalLeft = clamp((int) Math.floor(x * width), 0, width - 1);
+        int originalTop = clamp((int) Math.floor(y * height), 0, height - 1);
+        int originalRight = clamp((int) Math.ceil((x + w) * width), originalLeft + 1, width);
+        int originalBottom = clamp((int) Math.ceil((y + h) * height), originalTop + 1, height);
+        int maskLeft = clamp(originalLeft - expansionPx, 0, width - 1);
+        int maskTop = clamp(originalTop - expansionPx, 0, height - 1);
+        int maskRight = clamp(originalRight + expansionPx, maskLeft + 1, width);
+        int maskBottom = clamp(originalBottom + expansionPx, maskTop + 1, height);
+        int padding = Math.max(8, featherPx + 2);
+        int patchLeft = Math.max(0, maskLeft - padding);
+        int patchTop = Math.max(0, maskTop - padding);
+        int patchRight = Math.min(width, maskRight + padding);
+        int patchBottom = Math.min(height, maskBottom + padding);
+        int patchWidth = patchRight - patchLeft;
+        int patchHeight = patchBottom - patchTop;
+        if ((long) patchWidth * patchHeight > MAX_REPAIR_PATCH_PIXELS) {
+            throw new IllegalArgumentException(
+                "The selected repair region is too large for the conservative diffusion engine. Reduce the region and try again."
+            );
+        }
+        int[] sourcePatch = new int[patchWidth * patchHeight];
+        target.getPixels(sourcePatch, 0, patchWidth, patchLeft, patchTop, patchWidth, patchHeight);
+        int[] donorPatch = donor == null ? null : scaledBitmapPatch(donor, width, height, patchLeft, patchTop, patchWidth, patchHeight);
+        int[] temporalPatch = temporal == null ? null : scaledBitmapPatch(temporal, width, height, patchLeft, patchTop, patchWidth, patchHeight);
+        float temporalRatio = settings == null ? 0f : (float) settings.optDouble("temporalBlendRatio", 0.25d);
+        boolean colorMatch = settings != null && settings.optBoolean("colorMatch", true);
+        float donorRatio = donor == null ? 0f : ("donor-patch".equals(algorithm) ? 0.85f : 0.25f);
+        int[] repaired = NaiveInpainting.repairRegion(
+            sourcePatch, donorPatch, temporalPatch,
+            patchWidth, patchHeight,
+            maskLeft - patchLeft, maskTop - patchTop,
+            maskRight - maskLeft, maskBottom - maskTop,
+            featherPx, temporalRatio, colorMatch, donorRatio
+        );
+        target.setPixels(repaired, 0, patchWidth, patchLeft, patchTop, patchWidth, patchHeight);
+    }
+
+    private int[] scaledBitmapPatch(Bitmap bitmap, int referenceWidth, int referenceHeight,
+                                    int left, int top, int width, int height) {
+        int mappedLeft = clamp(Math.round(left * (bitmap.getWidth() / (float) referenceWidth)), 0, bitmap.getWidth() - 1);
+        int mappedTop = clamp(Math.round(top * (bitmap.getHeight() / (float) referenceHeight)), 0, bitmap.getHeight() - 1);
+        int mappedRight = clamp(Math.round((left + width) * (bitmap.getWidth() / (float) referenceWidth)), mappedLeft + 1, bitmap.getWidth());
+        int mappedBottom = clamp(Math.round((top + height) * (bitmap.getHeight() / (float) referenceHeight)), mappedTop + 1, bitmap.getHeight());
+        int cropWidth = mappedRight - mappedLeft;
+        int cropHeight = mappedBottom - mappedTop;
+        int[] raw = new int[cropWidth * cropHeight];
+        bitmap.getPixels(raw, 0, cropWidth, mappedLeft, mappedTop, cropWidth, cropHeight);
+        if (cropWidth == width && cropHeight == height) return raw;
+        Bitmap crop = Bitmap.createBitmap(raw, cropWidth, cropHeight, Bitmap.Config.ARGB_8888);
+        Bitmap scaled = Bitmap.createScaledBitmap(crop, width, height, true);
+        int[] result = new int[width * height];
+        scaled.getPixels(result, 0, width, 0, 0, width, height);
+        if (scaled != crop) scaled.recycle();
+        crop.recycle();
+        return result;
+    }
+
+    @PluginMethod
     public void deleteVideoData(PluginCall call) {
         String uriText = call.getString("uri");
         if (uriText == null || uriText.trim().isEmpty()) {
@@ -614,6 +1108,7 @@ public class FrameExtractorPlugin extends Plugin {
             deleteOwnedPath(new File(root, "indexes/" + indexId + ".pts"));
             deleteOwnedPath(new File(root, "frames/" + indexId));
             deleteOwnedPath(new File(root, "thumbnails/" + indexId));
+            deleteOwnedPath(RepairStoragePaths.repairDirectory(getContext().getFilesDir(), indexId));
             try {
                 getContext().getContentResolver().releasePersistableUriPermission(
                     Uri.parse(uriText), Intent.FLAG_GRANT_READ_URI_PERMISSION

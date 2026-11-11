@@ -1,5 +1,12 @@
-import { evenSize } from "@/lib/studio/draw";
-import { renderFrame } from "@/lib/studio/draw";
+import { Capacitor } from "@capacitor/core";
+import { evenSize, renderFrame } from "@/lib/studio/draw";
+import { FrameExtractor } from "@/lib/native/frame-extractor";
+import type {
+  ExtractedFrame,
+  FrameIndexResult,
+  FrameTimestampPage,
+  VideoInfo,
+} from "@/lib/native/frame-extractor";
 import type { Grade, Region } from "@/lib/studio/types";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
@@ -117,16 +124,115 @@ async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
   });
 }
 
-export async function extractVideoFrames(
-  file: File,
+export interface NativeVideoInput {
+  /** Persistable Android content URI returned by FrameExtractor.pickVideo(). */
+  uri: string;
+}
+
+export interface NativeVideoFrameBatch {
+  frames: ExtractedFrame[];
+  timestamps: FrameTimestampPage;
+  indexVerified: boolean;
+}
+
+export interface NativeVideoExtractionResult {
+  kind: "native";
+  info: VideoInfo;
+  index: FrameIndexResult;
+}
+
+export interface BrowserVideoExtractionResult {
+  kind: "browser";
+  width: number;
+  height: number;
+  duration: number;
+  frameCount: number;
+}
+
+/**
+ * Android overload: the caller must provide the content URI from the native
+ * document picker. Each batch contains full-resolution app-private frame paths
+ * and their source presentation timestamps; the Android plugin enforces its
+ * per-call maximum of 250 frames, not a total video-duration limit.
+ */
+export function extractVideoFrames(
+  source: NativeVideoInput,
+  fps: number,
+  batchSize: number,
+  onProgress: (done: number, total: number) => void,
+  onBatch: (startIndex: number, batch: NativeVideoFrameBatch) => Promise<void>,
+): Promise<NativeVideoExtractionResult>;
+
+/** Browser fallback for web builds. It has no fixed duration or resolution cap. */
+export function extractVideoFrames(
+  source: File,
   fps: number,
   batchSize: number,
   onProgress: (done: number, total: number) => void,
   onBatch: (startIndex: number, frames: Blob[]) => Promise<void>,
-): Promise<{ width: number; height: number; duration: number; frameCount: number }> {
+): Promise<BrowserVideoExtractionResult>;
+
+export async function extractVideoFrames(
+  source: File | NativeVideoInput,
+  fps: number,
+  batchSize: number,
+  onProgress: (done: number, total: number) => void,
+  onBatch: ((startIndex: number, frames: Blob[]) => Promise<void>) |
+    ((startIndex: number, batch: NativeVideoFrameBatch) => Promise<void>),
+): Promise<BrowserVideoExtractionResult | NativeVideoExtractionResult> {
+  if ("uri" in source) {
+    if (!Capacitor.isNativePlatform() || Capacitor.getPlatform() !== "android") {
+      throw new Error("Native video extraction requires the Android app and a document-picker URI.");
+    }
+    if (!Number.isInteger(batchSize) || batchSize < 1) {
+      throw new Error("Choose a native frame batch size greater than zero.");
+    }
+
+    const [info, index] = await Promise.all([
+      FrameExtractor.getVideoInfo(source.uri),
+      FrameExtractor.buildFrameIndex(source.uri),
+    ]);
+    if (index.frameCount < 1) throw new Error("No video frames could be indexed.");
+
+    const progressHandle = await FrameExtractor.addProgressListener((event) => {
+      const rangeStart = Number(event.operationId.match(/:(\d+)-\d+$/)?.[1] ?? 0);
+      onProgress(rangeStart + event.currentFrame, index.frameCount);
+    });
+    try {
+      const chunkSize = Math.min(250, batchSize);
+      for (let start = 0; start < index.frameCount; start += chunkSize) {
+        const end = Math.min(index.frameCount - 1, start + chunkSize - 1);
+        const [timestamps, extracted] = await Promise.all([
+          FrameExtractor.getFrameTimestampPage(source.uri, start, end - start + 1),
+          FrameExtractor.extractFrameRange(source.uri, start, end, 0, 95),
+        ]);
+        const expected = end - start + 1;
+        if (extracted.frames.length !== expected || timestamps.entries.length !== expected) {
+          throw new Error(
+            `Native extraction returned ${extracted.frames.length}/${expected} frames and ${timestamps.entries.length}/${expected} timestamps.`,
+          );
+        }
+        await (onBatch as (startIndex: number, batch: NativeVideoFrameBatch) => Promise<void>)(
+          start,
+          { frames: extracted.frames, timestamps, indexVerified: index.indexVerified },
+        );
+        onProgress(end + 1, index.frameCount);
+      }
+    } finally {
+      await progressHandle.remove().catch(() => undefined);
+    }
+    return { kind: "native", info, index };
+  }
+
+  // A File/Blob picked from the WebView is not a content URI. Never pass it to
+  // MediaExtractor; Android imports must go through the system document picker.
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") {
+    throw new Error("Use the Android video picker so the native extractor receives a content URI.");
+  }
   if (!Number.isFinite(fps) || fps <= 0) throw new Error("Choose a frame rate greater than zero.");
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64)
     throw new Error("Choose a frame batch size between 1 and 64.");
+  const file = source;
   const url = URL.createObjectURL(file);
   const video = document.createElement("video");
   video.muted = true;
@@ -162,12 +268,18 @@ export async function extractVideoFrames(
       batch.push(await canvasToBlob(canvas, "image/jpeg", 0.92));
       onProgress(i + 1, count);
       if (batch.length >= batchSize || i === count - 1) {
-        await onBatch(batchStart, batch);
+        await (onBatch as (startIndex: number, frames: Blob[]) => Promise<void>)(batchStart, batch);
         batchStart += batch.length;
         batch = [];
       }
     }
-    return { width: sized.width, height: sized.height, duration, frameCount: count };
+    return {
+      kind: "browser",
+      width: sized.width,
+      height: sized.height,
+      duration,
+      frameCount: count,
+    };
   } finally {
     URL.revokeObjectURL(url);
     video.src = "";

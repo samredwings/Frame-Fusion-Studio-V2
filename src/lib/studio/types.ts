@@ -193,6 +193,9 @@ export interface VideoSource {
   hasVariableFrameRate: boolean;
   frameIndexId: string;
   frameIndexVerified: boolean;
+  captureMethod?: "manual" | "interval";
+  captureIntervalMs?: number;
+  captureRanges?: Array<{ id: string; startMs: number; endMs: number }>;
   width: number;
   height: number;
   rotation: 0 | 90 | 180 | 270;
@@ -439,7 +442,12 @@ export const DEFAULT_RECONSTRUCTION_SETTINGS: ReconstructionSettings = {
 
 export type WatermarkType = "logo" | "text" | "timestamp" | "subtitle" | "qr" | "unknown";
 export type RemovalAlgorithm =
-  "inpaint-ns" | "inpaint-telea" | "texture-synthesis" | "frame-interpolation" | "donor-patch";
+  | "naive-diffusion"
+  | "inpaint-ns"
+  | "inpaint-telea"
+  | "texture-synthesis"
+  | "frame-interpolation"
+  | "donor-patch";
 export type DetectionMethod =
   "manual" | "template-match" | "ocr-detect" | "ai-detect" | "static-region";
 export interface DetectedWatermark {

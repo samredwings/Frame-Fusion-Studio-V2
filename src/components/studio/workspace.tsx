@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
+import { FrameExtractor, type PickedVideo, type VideoInfo, type FrameIndexResult } from "@/lib/native/frame-extractor";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -23,6 +24,9 @@ import { CompareTool } from "@/components/studio/compare-tool";
 import { ExportTool } from "@/components/studio/export-tool";
 import { FaceTool } from "@/components/studio/face-tool";
 import { FrameTool } from "@/components/studio/frame-tool";
+import { CaptureWizard } from "@/components/studio/capture-wizard";
+import type { NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
+import { getAndroidContentPreviewUrl } from "@/lib/native/content-preview";
 import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
 import { Button, Select } from "@/components/studio/ui";
@@ -49,6 +53,7 @@ export function Workspace({
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
   const frameAssets = useStudio((state) => state.frameAssets);
+  const busy = useStudio((state) => state.busy);
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
   const importVideo = useStudio((state) => state.importVideo);
@@ -65,8 +70,10 @@ export function Workspace({
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
   const [frameIndex, setFrameIndex] = useState(0);
+  const [isNativeAndroid, setIsNativeAndroid] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(24);
+  const [nativePreparing, setNativePreparing] = useState(false);
+  const [pendingCapture, setPendingCapture] = useState<{ picked: PickedVideo; previewUrl: string; info: VideoInfo; index: FrameIndexResult } | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
@@ -228,10 +235,39 @@ export function Workspace({
     }
   }
 
+  useEffect(() => {
+    setIsNativeAndroid(Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android");
+  }, []);
+
   async function onNativeImport() {
+    if (!project || nativePreparing) return;
+    setNativePreparing(true);
+    useStudio.setState({ error: null, notice: null, busy: "Choose a source video…" });
+    try {
+      const picked = await FrameExtractor.pickVideo();
+      useStudio.setState({ busy: "Reading video metadata and building the timestamp index…" });
+      const [info, index] = await Promise.all([
+        FrameExtractor.getVideoInfo(picked.uri),
+        FrameExtractor.buildFrameIndex(picked.uri),
+      ]);
+      if (!index.frameCount || !index.indexId) throw new Error("No frames could be indexed from that video.");
+      setPendingCapture({ picked, previewUrl: getAndroidContentPreviewUrl(picked.uri, window.location.origin), info, index });
+      useStudio.setState({ busy: null });
+    } catch (error) {
+      useStudio.setState({
+        busy: null,
+        error: error instanceof Error ? error.message : "Could not prepare this video for extraction.",
+      });
+    } finally {
+      setNativePreparing(false);
+    }
+  }
+
+  async function onNativeCapture(plan: NativeVideoCapturePlan) {
     if (!project) return;
     try {
-      const id = await importNativeVideo(project.id);
+      const id = await importNativeVideo(project.id, plan);
+      setPendingCapture(null);
       setFrameIndex(0);
       void navigate({
         to: "/projects/$projectId",
@@ -239,12 +275,12 @@ export function Workspace({
         search: { tool, source: id },
       });
     } catch {
-      /* The app-level status line explains import failures. */
+      /* The app-level status line explains native extraction failures. */
     }
   }
 
   function openVideoPicker() {
-    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") {
+    if (isNativeAndroid) {
       void onNativeImport();
       return;
     }
@@ -254,7 +290,7 @@ export function Workspace({
   async function onFile(file: File) {
     if (!project) return;
     try {
-      const id = await importVideo(project.id, file, fps);
+      const id = await importVideo(project.id, file, 24);
       setFrameIndex(0);
       void navigate({
         to: "/projects/$projectId",
@@ -350,23 +386,6 @@ export function Workspace({
               ))}
             </Select>
           </label>
-          <label className="studio-rate flex shrink-0 items-center gap-2 rounded-xl px-2.5">
-            <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">
-              Capture
-            </span>
-            <Select
-              className="w-[5.25rem] border-0 bg-transparent px-1"
-              aria-label="Extract frame rate"
-              value={fps}
-              onChange={(event) => setFps(Number(event.target.value))}
-            >
-              {[4, 8, 12, 24].map((value) => (
-                <option key={value} value={value}>
-                  {value} fps
-                </option>
-              ))}
-            </Select>
-          </label>
           <input
             ref={fileRef}
             className="sr-only"
@@ -401,7 +420,19 @@ export function Workspace({
         </div>
 
         <main className="flex min-h-0 flex-1 flex-col">
-          {!source ? (
+          {nativePreparing ? (
+            <div className="m-auto flex max-w-md flex-col items-center gap-3 px-6 text-center" role="status">
+              <span className="size-8 animate-spin rounded-full border-2 border-cyan border-r-transparent" />
+              <p className="text-sm text-muted">{busy || "Preparing your video preview…"}</p>
+            </div>
+          ) : pendingCapture ? (
+            <CaptureWizard
+              video={pendingCapture}
+              busy={busy}
+              onCancel={() => { setPendingCapture(null); useStudio.setState({ busy: null }); }}
+              onExtract={(plan) => void onNativeCapture(plan)}
+            />
+          ) : !source ? (
             <div className="m-auto max-w-md px-6 py-10 text-center">
               <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-surface-2 text-amber">
                 <Film className="size-6" aria-hidden="true" />
@@ -411,8 +442,8 @@ export function Workspace({
                 Bring a clip into the atlas
               </h2>
               <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-muted">
-                Frames are extracted on this device at the selected rate and original decoded
-                dimensions. Longer clips may take more time and storage.
+                Preview your video first, then choose Manual range or Time interval capture. Add
+                multiple sections from the same clip and extract only the frames you need.
               </p>
               <Button className="mt-5" onClick={openVideoPicker}>
                 <Upload className="size-4" aria-hidden="true" />
@@ -500,10 +531,11 @@ export function Workspace({
           )}
         </main>
 
-        <nav
-          className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
-          aria-label="Editor tools"
-        >
+        {!pendingCapture && !nativePreparing ? (
+          <nav
+            className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
+            aria-label="Editor tools"
+          >
           <div className="min-w-0">
             <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted">Editing</p>
             <p className="truncate text-sm font-semibold">{toolMeta[tool].label}</p>
@@ -521,7 +553,8 @@ export function Workspace({
             <SlidersHorizontal className="size-4" aria-hidden="true" />
             Edit
           </Button>
-        </nav>
+          </nav>
+        ) : null}
       </div>
       {toolsOpen ? (
         <div

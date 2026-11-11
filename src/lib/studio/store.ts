@@ -9,7 +9,8 @@ import {
   type IDBBatchOperation,
 } from "@/lib/studio/idb";
 import { extractVideoFrames } from "@/lib/studio/media";
-import { FrameExtractor } from "@/lib/native/frame-extractor";
+import { FrameExtractor, type FrameTimestamp } from "@/lib/native/frame-extractor";
+import { selectFramesForCapture, type NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
 import { DEMO_PROJECT_ID, seedDemo } from "@/lib/studio/sample";
 import type {
   DetectedWatermark,
@@ -58,7 +59,7 @@ type StudioState = {
   deleteProject: (id: string) => Promise<void>;
   restoreDemo: () => Promise<void>;
   importVideo: (projectId: string, file: File, fps: number) => Promise<string>;
-  importNativeVideo: (projectId: string) => Promise<string>;
+  importNativeVideo: (projectId: string, plan: NativeVideoCapturePlan) => Promise<string>;
   deleteSource: (id: string) => Promise<void>;
   deleteFrame: (sourceId: string, frameIndex: number) => Promise<void>;
   setLock: (sourceId: string, lock: Source["lock"]) => Promise<void>;
@@ -385,40 +386,111 @@ export const useStudio = create<StudioState>((set, get) => ({
       throw error;
     }
   },
-  importNativeVideo: async (projectId) => {
+  importNativeVideo: async (projectId, plan) => {
     if (!get().projects.some((item) => item.id === projectId))
       throw new Error("The selected project is no longer available.");
+    if (plan.index.frameCount < 1 || plan.index.indexId.length === 0)
+      throw new Error("The selected video has no verified timestamp index.");
     const sourceId = crypto.randomUUID();
     const savedAssetIds: string[] = [];
-    let selectedUri: string | null = null;
-    let progressHandle: { remove: () => Promise<void> } | null = null;
-    set({ busy: "Choose a source video…", error: null, notice: null });
+    const selectedUri = plan.picked.uri;
+    set({ busy: "Reading exact frame timestamps…", error: null, notice: null });
     try {
-      const picked = await FrameExtractor.pickVideo();
-      selectedUri = picked.uri;
-      set({ busy: "Reading video metadata…" });
-      const info = await FrameExtractor.getVideoInfo(picked.uri);
-      const index = await FrameExtractor.buildFrameIndex(picked.uri);
-      if (index.frameCount < 1) throw new Error("No video frames could be indexed.");
-      const fps =
-        index.averageFrameRate > 0
-          ? index.averageFrameRate
-          : index.nominalFrameRate > 0
-            ? index.nominalFrameRate
-            : 24;
+      const timestampEntries: FrameTimestamp[] = [];
+      const pageSize = 5_000;
+      const pageCount = Math.ceil(plan.index.frameCount / pageSize);
+      for (let start = 0; start < plan.index.frameCount; start += pageSize) {
+        const limit = Math.min(pageSize, plan.index.frameCount - start);
+        const page = await FrameExtractor.getFrameTimestampPage(selectedUri, start, limit);
+        if (page.startFrameIndex !== start || page.entries.length !== limit
+          || page.totalFrameCount !== plan.index.frameCount) {
+          throw new Error(`The native timestamp index returned an incomplete page at frame ${start}.`);
+        }
+        timestampEntries.push(...page.entries);
+        set({ busy: `Reading exact frame timestamps… ${Math.min(pageCount, Math.floor(start / pageSize) + 1)} of ${pageCount}` });
+      }
+
+      const selectedFrames = selectFramesForCapture(
+        timestampEntries,
+        plan.ranges,
+        plan.method,
+        plan.intervalMs,
+      );
+      if (!selectedFrames.length)
+        throw new Error("No source frames fall inside the selected capture ranges. Widen a range and try again.");
+
       const role: SourceRole = get().sources.some((source) => source.projectId === projectId)
         ? "compare"
         : "primary";
       const now = Date.now();
+      const timestampByIndex = new Map(timestampEntries.map((entry) => [entry.frameIndex, entry]));
+      const savedAssets: FrameAsset[] = [];
+      const batchSize = 250;
+
+      for (let start = 0; start < selectedFrames.length; start += batchSize) {
+        const batch = selectedFrames.slice(start, start + batchSize);
+        set({ busy: `Extracting selected frames… ${Math.min(start + batch.length, selectedFrames.length)} of ${selectedFrames.length}` });
+        const extracted = await FrameExtractor.extractFrameSelection(
+          selectedUri,
+          batch.map((item) => item.frameIndex),
+          0,
+          95,
+        );
+        if (extracted.extractedCount !== batch.length || extracted.frames.length !== batch.length) {
+          throw new Error(`Native extraction returned ${extracted.frames.length} of ${batch.length} selected frames.`);
+        }
+        const assets: FrameAsset[] = extracted.frames.map((frame) => {
+          const selection = batch.find((item) => item.frameIndex === frame.frameIndex);
+          if (!selection) throw new Error(`Native extraction returned unexpected frame ${frame.frameIndex}.`);
+          const timestamp = timestampByIndex.get(frame.frameIndex);
+          return {
+            id: `${sourceId}:${frame.frameIndex}`,
+            projectId,
+            sourceVideoId: sourceId,
+            frameIndex: frame.frameIndex,
+            presentationTimeUs: frame.presentationTimeUs,
+            durationUs: timestamp?.durationUs ?? 0,
+            fullResolutionPath: frame.outputPath,
+            width: frame.width,
+            height: frame.height,
+            fileSize: frame.fileSize,
+            extractionMethod: plan.method === "interval" ? "interval" : "range",
+            sequenceId: selection.sequenceId,
+            isEdited: false,
+            isReplacementCandidate: false,
+            exactFrameIndex: frame.exactFrameIndex && plan.index.indexVerified,
+            createdAt: now,
+          };
+        });
+        if (assets.length !== batch.length || assets[0]?.frameIndex !== batch[0]?.frameIndex)
+          throw new Error(`Native extraction returned an invalid selected-frame batch starting at ${batch[0]?.frameIndex}.`);
+        await idbBatch(assets.map((asset) => ({
+          kind: "put" as const,
+          store: "frameAssets",
+          key: asset.id,
+          value: asset,
+        })));
+        savedAssets.push(...assets);
+        savedAssetIds.push(...assets.map((asset) => asset.id));
+        const savedIds = new Set(savedAssetIds);
+        set({ frameAssets: [...get().frameAssets.filter((asset) => !savedIds.has(asset.id)), ...savedAssets] });
+      }
+
+      const info = plan.info;
+      const index = plan.index;
+      const fps = index.averageFrameRate > 0
+        ? index.averageFrameRate
+        : index.nominalFrameRate > 0 ? index.nominalFrameRate : 24;
+      const sourceFps = plan.method === "interval" ? 1_000 / plan.intervalMs : fps;
       const rotation = [0, 90, 180, 270].includes(info.rotation)
         ? (info.rotation as 0 | 90 | 180 | 270)
         : 0;
       const videoSource: VideoSource = {
         id: sourceId,
         projectId,
-        uri: picked.uri,
-        filename: picked.filename || info.filename || "video",
-        sizeBytes: picked.sizeBytes || info.sizeBytes,
+        uri: selectedUri,
+        filename: plan.picked.filename || info.filename || "video",
+        sizeBytes: plan.picked.sizeBytes || info.sizeBytes,
         durationMs: info.durationMs,
         frameCount: index.frameCount,
         nominalFrameRate: index.nominalFrameRate || fps,
@@ -426,6 +498,9 @@ export const useStudio = create<StudioState>((set, get) => ({
         hasVariableFrameRate: index.hasVariableFrameRate,
         frameIndexId: index.indexId,
         frameIndexVerified: index.indexVerified,
+        captureMethod: plan.method,
+        captureIntervalMs: plan.method === "interval" ? plan.intervalMs : undefined,
+        captureRanges: plan.ranges.map((range) => ({ ...range })),
         width: info.width,
         height: info.height,
         rotation,
@@ -439,73 +514,13 @@ export const useStudio = create<StudioState>((set, get) => ({
         importedAt: now,
         updatedAt: now,
       };
-      progressHandle = await FrameExtractor.addProgressListener((event) => {
-        set({
-          busy:
-            "Extracting native frame " +
-            event.currentFrame +
-            " of " +
-            event.totalFrames +
-            " (" +
-            event.progressPercent +
-            "%)",
-        });
-      });
-      const chunkSize = 250;
-      for (let start = 0; start < index.frameCount; start += chunkSize) {
-        const end = Math.min(index.frameCount - 1, start + chunkSize - 1);
-        set({
-          busy: "Indexing frames " + (start + 1) + "–" + (end + 1) + " of " + index.frameCount,
-        });
-        const [timestamps, extracted] = await Promise.all([
-          FrameExtractor.getFrameTimestampPage(picked.uri, start, end - start + 1),
-          FrameExtractor.extractFrameRange(picked.uri, start, end, 0, 95),
-        ]);
-        const durations = new Map(
-          timestamps.entries.map((entry) => [entry.frameIndex, entry.durationUs]),
-        );
-        const assets: FrameAsset[] = extracted.frames.map((frame) => ({
-          id: sourceId + ":" + frame.frameIndex,
-          projectId,
-          sourceVideoId: sourceId,
-          frameIndex: frame.frameIndex,
-          presentationTimeUs: frame.presentationTimeUs,
-          durationUs: durations.get(frame.frameIndex) ?? 0,
-          fullResolutionPath: frame.outputPath,
-          width: frame.width,
-          height: frame.height,
-          fileSize: frame.fileSize,
-          extractionMethod: "all",
-          isEdited: false,
-          isReplacementCandidate: false,
-          exactFrameIndex: frame.exactFrameIndex && index.indexVerified,
-          createdAt: now,
-        }));
-        if (assets.length !== end - start + 1)
-          throw new Error(
-            "Native extraction returned " + assets.length + " of " + (end - start + 1) + " frames.",
-          );
-        await idbBatch(
-          assets.map((asset) => ({
-            kind: "put" as const,
-            store: "frameAssets",
-            key: asset.id,
-            value: asset,
-          })),
-        );
-        savedAssetIds.push(...assets.map((asset) => asset.id));
-        const savedIds = new Set(savedAssetIds);
-        set({
-          frameAssets: [...get().frameAssets.filter((asset) => !savedIds.has(asset.id)), ...assets],
-        });
-      }
       const legacySource: Source = {
         id: sourceId,
         projectId,
         filename: videoSource.filename,
         role,
-        fps,
-        frameCount: index.frameCount,
+        fps: sourceFps,
+        frameCount: selectedFrames.length,
         durationMs: info.durationMs,
         width: info.width,
         height: info.height,
@@ -521,7 +536,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (project) {
         const next = {
           ...project,
-          fps: role === "primary" ? fps : project.fps,
+          fps: role === "primary" ? sourceFps : project.fps,
           updatedAt: Date.now(),
         };
         await idbPut("projects", projectId, next);
@@ -531,32 +546,22 @@ export const useStudio = create<StudioState>((set, get) => ({
         sources: [...get().sources, legacySource],
         videoSources: [...get().videoSources, videoSource],
         busy: null,
-        notice: index.indexVerified
-          ? "Imported " + index.frameCount + " indexed frames from " + videoSource.filename + "."
-          : "Imported " +
-            index.frameCount +
-            " frames from " +
-            videoSource.filename +
-            ". Android could not independently verify the frame count, so exact rebuild remains unverified.",
+        notice: `Extracted ${selectedFrames.length} frames from ${videoSource.filename} across ${plan.ranges.length} selected range${plan.ranges.length === 1 ? "" : "s"}.`,
       });
       return sourceId;
     } catch (error) {
-      await idbBatch(
-        savedAssetIds.map((assetId) => ({
-          kind: "delete" as const,
-          store: "frameAssets",
-          key: assetId,
-        })),
-      ).catch(() => undefined);
-      if (selectedUri) await FrameExtractor.deleteVideoData(selectedUri).catch(() => undefined);
+      await idbBatch(savedAssetIds.map((assetId) => ({
+        kind: "delete" as const,
+        store: "frameAssets",
+        key: assetId,
+      }))).catch(() => undefined);
+      await FrameExtractor.deleteVideoData(selectedUri).catch(() => undefined);
       set({
         frameAssets: get().frameAssets.filter((asset) => !savedAssetIds.includes(asset.id)),
         busy: null,
-        error: error instanceof Error ? error.message : "Native video import failed.",
+        error: error instanceof Error ? error.message : "Native video extraction failed.",
       });
       throw error;
-    } finally {
-      await progressHandle?.remove().catch(() => undefined);
     }
   },
   deleteSource: async (id) => {
