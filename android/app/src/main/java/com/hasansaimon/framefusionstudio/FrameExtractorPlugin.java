@@ -233,50 +233,112 @@ public class FrameExtractorPlugin extends Plugin {
             int width = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
             int height = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
             int bitrate = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE));
-
-            int metadataFrameCount = 0;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                metadataFrameCount = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT));
-            }
+            int metadataFrameCount = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT))
+                : 0;
 
             String videoMime = "";
             float nominalFps = 0f;
+            float captureFps = parseFloat(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE));
             int videoTrack = -1;
             boolean hasAudio = false;
             String audioMime = null;
             int audioChannels = 0;
             int audioSampleRate = 0;
             int audioBitrate = 0;
+            int audioTrackCount = 0;
             long trackDurationUs = durationMs * 1000L;
+            JSArray tracks = new JSArray();
 
             for (int i = 0; i < extractor.getTrackCount(); i++) {
                 MediaFormat format = extractor.getTrackFormat(i);
                 String mime = format.getString(MediaFormat.KEY_MIME);
                 if (mime == null) continue;
 
+                JSObject track = new JSObject();
+                track.put("trackIndex", i);
+                track.put("mimeType", mime);
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    long value = format.getLong(MediaFormat.KEY_DURATION);
+                    track.put("durationUs", value);
+                    trackDurationUs = Math.max(trackDurationUs, value);
+                }
+                if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    track.put("bitRate", value);
+                    if (mime.startsWith("video/") && bitrate <= 0) bitrate = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_WIDTH)) {
+                    int value = format.getInteger(MediaFormat.KEY_WIDTH);
+                    track.put("width", value);
+                    if (mime.startsWith("video/") && width <= 0) width = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                    int value = format.getInteger(MediaFormat.KEY_HEIGHT);
+                    track.put("height", value);
+                    if (mime.startsWith("video/") && height <= 0) height = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_FRAME_RATE);
+                    track.put("frameRate", value);
+                    if (mime.startsWith("video/") && videoTrack < 0) nominalFps = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    int value = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    track.put("channelCount", value);
+                    if (mime.startsWith("audio/") && !hasAudio) audioChannels = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    track.put("sampleRate", value);
+                    if (mime.startsWith("audio/") && !hasAudio) audioSampleRate = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_PROFILE)) track.put("profile", format.getInteger(MediaFormat.KEY_PROFILE));
+                if (format.containsKey(MediaFormat.KEY_LEVEL)) track.put("level", format.getInteger(MediaFormat.KEY_LEVEL));
+                if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) track.put("colorStandard", format.getInteger(MediaFormat.KEY_COLOR_STANDARD));
+                if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) track.put("colorTransfer", format.getInteger(MediaFormat.KEY_COLOR_TRANSFER));
+                if (format.containsKey(MediaFormat.KEY_COLOR_RANGE)) track.put("colorRange", format.getInteger(MediaFormat.KEY_COLOR_RANGE));
+                if (format.containsKey(MediaFormat.KEY_LANGUAGE)) {
+                    String language = format.getString(MediaFormat.KEY_LANGUAGE);
+                    if (language != null) track.put("language", language);
+                }
+                tracks.put(track);
+
                 if (mime.startsWith("video/") && videoTrack < 0) {
                     videoTrack = i;
                     videoMime = mime;
-                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                        nominalFps = format.getInteger(MediaFormat.KEY_FRAME_RATE);
-                    }
-                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                        trackDurationUs = Math.max(trackDurationUs, format.getLong(MediaFormat.KEY_DURATION));
-                    }
-                    if (width <= 0 && format.containsKey(MediaFormat.KEY_WIDTH)) width = format.getInteger(MediaFormat.KEY_WIDTH);
-                    if (height <= 0 && format.containsKey(MediaFormat.KEY_HEIGHT)) height = format.getInteger(MediaFormat.KEY_HEIGHT);
-                    if (bitrate <= 0 && format.containsKey(MediaFormat.KEY_BIT_RATE)) bitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
-                } else if (mime.startsWith("audio/") && !hasAudio) {
+                } else if (mime.startsWith("audio/")) {
                     hasAudio = true;
-                    audioMime = mime;
-                    if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) audioChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-                    if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) audioSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-                    if (format.containsKey(MediaFormat.KEY_BIT_RATE)) audioBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    audioTrackCount++;
+                    if (audioMime == null) audioMime = mime;
+                    if (format.containsKey(MediaFormat.KEY_BIT_RATE) && audioBitrate <= 0) {
+                        audioBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    }
                 }
             }
             if (videoTrack < 0) throw new IllegalArgumentException("The selected file has no video track.");
+            if (durationMs <= 0 && trackDurationUs > 0) durationMs = trackDurationUs / 1000L;
 
-            float captureFps = parseFloat(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE));
+            // Android exposes container-level date/location and descriptive tags here.
+            // Video containers do not universally store a standalone EXIF block.
+            JSObject embeddedMetadata = new JSObject();
+            addMetadataTag(embeddedMetadata, retriever, "title", MediaMetadataRetriever.METADATA_KEY_TITLE);
+            addMetadataTag(embeddedMetadata, retriever, "artist", MediaMetadataRetriever.METADATA_KEY_ARTIST);
+            addMetadataTag(embeddedMetadata, retriever, "author", MediaMetadataRetriever.METADATA_KEY_AUTHOR);
+            addMetadataTag(embeddedMetadata, retriever, "album", MediaMetadataRetriever.METADATA_KEY_ALBUM);
+            addMetadataTag(embeddedMetadata, retriever, "albumArtist", MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST);
+            addMetadataTag(embeddedMetadata, retriever, "date", MediaMetadataRetriever.METADATA_KEY_DATE);
+            addMetadataTag(embeddedMetadata, retriever, "location", MediaMetadataRetriever.METADATA_KEY_LOCATION);
+            addMetadataTag(embeddedMetadata, retriever, "genre", MediaMetadataRetriever.METADATA_KEY_GENRE);
+            addMetadataTag(embeddedMetadata, retriever, "composer", MediaMetadataRetriever.METADATA_KEY_COMPOSER);
+            addMetadataTag(embeddedMetadata, retriever, "writer", MediaMetadataRetriever.METADATA_KEY_WRITER);
+            addMetadataTag(embeddedMetadata, retriever, "compilation", MediaMetadataRetriever.METADATA_KEY_COMPILATION);
+            addMetadataTag(embeddedMetadata, retriever, "discNumber", MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER);
+            addMetadataTag(embeddedMetadata, retriever, "trackNumber", MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER);
+            addMetadataTag(embeddedMetadata, retriever, "trackCount", MediaMetadataRetriever.METADATA_KEY_NUM_TRACKS);
+            addMetadataTag(embeddedMetadata, retriever, "mimeType", MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+            if (captureFps > 0f) embeddedMetadata.put("captureFrameRate", captureFps);
+
             JSObject value = new JSObject();
             value.put("uri", uri.toString());
             value.put("filename", queryDisplayName(uri));
@@ -296,11 +358,31 @@ public class FrameExtractorPlugin extends Plugin {
             value.put("audioChannels", audioChannels);
             value.put("audioSampleRate", audioSampleRate);
             value.put("audioBitrate", audioBitrate);
+            value.put("audioTrackCount", audioTrackCount);
+            value.put("trackCount", extractor.getTrackCount());
+            value.put("videoTrackIndex", videoTrack);
+            value.put("embeddedMetadata", embeddedMetadata);
+            value.put("tracks", tracks);
+            value.put("metadataScope", "Android container and media-track metadata; date/location tags are included when the source exposes them.");
             value.put("frameCountIsIndexed", false);
             return value;
         } finally {
             try { extractor.release(); } catch (RuntimeException ignored) { }
             try { retriever.release(); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void addMetadataTag(
+        JSObject target,
+        MediaMetadataRetriever retriever,
+        String name,
+        int key
+    ) {
+        try {
+            String value = retriever.extractMetadata(key);
+            if (value != null && !value.trim().isEmpty()) target.put(name, value.trim());
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not read embedded video tag: " + name, error);
         }
     }
 
