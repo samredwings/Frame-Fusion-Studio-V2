@@ -52,7 +52,6 @@ import java.util.concurrent.RejectedExecutionException;
 @CapacitorPlugin(name = "FrameExtractor")
 public class FrameExtractorPlugin extends Plugin {
     private static final String TAG = "FrameExtractor";
-    private static final int INDEX_HEADER_BYTES = 12;
     private static final int MAX_PAGE_SIZE = 5000;
     private static final int MAX_RANGE_SIZE = 250;
     private static final int DEFAULT_THUMB_WIDTH = 160;
@@ -837,10 +836,7 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     private long readPts(RandomAccessFile index, int frameIndex) throws Exception {
-        int count = index.readInt();
-        if (frameIndex < 0 || frameIndex >= count) throw new IllegalArgumentException("Frame index is outside the timestamp map.");
-        index.seek(INDEX_HEADER_BYTES + (long) frameIndex * Long.BYTES);
-        return index.readLong();
+        return TimestampIndexReader.readPts(index, frameIndex);
     }
 
     private File getOutputDir(String folder, String indexId) throws Exception {
