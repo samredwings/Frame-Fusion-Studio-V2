@@ -84,7 +84,7 @@ public class FrameExtractorPlugin extends Plugin {
             StringWriter stack = new StringWriter();
             error.printStackTrace(new PrintWriter(stack));
             String safeStack = stack.toString()
-                .replaceAll("content://\\\\S+", "[content-uri]")
+                .replaceAll("content://\\S+", "[content-uri]")
                 .replaceAll("file://\\\\S+", "[file-uri]");
             try (PrintWriter writer = new PrintWriter(
                 new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8)
@@ -142,7 +142,7 @@ public class FrameExtractorPlugin extends Plugin {
             depth++;
         }
         return message.toString()
-            .replaceAll("content://\\\\S+", "[content-uri]")
+            .replaceAll("content://\\S+", "[content-uri]")
             .replaceAll("file://\\\\S+", "[file-uri]");
     }
 
