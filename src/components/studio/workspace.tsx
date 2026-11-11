@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -6,6 +6,8 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
   Columns2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Film,
   FileText,
@@ -32,6 +34,32 @@ import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
 import { Button, Select } from "@/components/studio/ui";
 
+function formatTimelineTime(milliseconds: number): string {
+  const value = Math.max(0, Math.floor(milliseconds));
+  const hours = Math.floor(value / 3_600_000);
+  const minutes = Math.floor((value % 3_600_000) / 60_000);
+  const seconds = Math.floor((value % 60_000) / 1000);
+  const millis = value % 1000;
+  const clock = [minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":") +
+    "." + String(millis).padStart(3, "0");
+  return hours > 0 ? String(hours).padStart(2, "0") + ":" + clock : clock;
+}
+
+function nearestFrameIndexForTime(timestampsUs: number[], targetUs: number): number {
+  if (!timestampsUs.length) return 0;
+  let low = 0;
+  let high = timestampsUs.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((timestampsUs[middle] ?? 0) < targetUs) low = middle + 1;
+    else high = middle;
+  }
+  if (low === 0) return 0;
+  const before = timestampsUs[low - 1] ?? 0;
+  const after = timestampsUs[low] ?? before;
+  return targetUs - before <= after - targetUs ? low - 1 : low;
+}
+
 const toolMeta: Record<ToolId, { label: string; Icon: LucideIcon }> = {
   frames: { label: "Frames", Icon: Film },
   compare: { label: "Compare", Icon: Columns2 },
@@ -54,6 +82,7 @@ export function Workspace({
   const ready = useStudio((state) => state.ready);
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
+  const videoSources = useStudio((state) => state.videoSources);
   const frameAssets = useStudio((state) => state.frameAssets);
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
@@ -104,12 +133,27 @@ export function Workspace({
     mine.find((item) => item.id === sourceId) ??
     mine.find((item) => item.role === "primary") ??
     mine[0];
+  const videoSource = videoSources.find((item) => item.id === source?.id);
+  const sourceFrameTimesUs = useMemo(() => {
+    if (!source) return [];
+    const indexedTimes = new Map<number, number>();
+    for (const asset of frameAssets) {
+      if (asset.sourceVideoId === source.id) {
+        indexedTimes.set(asset.frameIndex, asset.presentationTimeUs);
+      }
+    }
+    const fallbackRate = Math.max(1, source.fps || 24);
+    return Array.from({ length: source.frameCount }, (_, index) =>
+      indexedTimes.get(index) ?? Math.round((index * 1_000_000) / fallbackRate),
+    );
+  }, [frameAssets, source]);
   const { urls, loading } = useBaseFrames(source, frameAssets);
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
   const [frameIndex, setFrameIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [fps, setFps] = useState(24);
+  const selectedTimeUs = sourceFrameTimesUs[frameIndex] ?? 0;
+  const selectedTimeMs = selectedTimeUs / 1000;
   const [toolsOpen, setToolsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
@@ -149,14 +193,16 @@ export function Workspace({
 
   useEffect(() => {
     if (!playing || !source?.frameCount) return;
-    const timer = window.setInterval(
-      () => {
-        setFrameIndex((current) => (current + 1) % source.frameCount);
-      },
-      1000 / Math.max(1, source.fps),
-    );
-    return () => window.clearInterval(timer);
-  }, [playing, source]);
+    const nextIndex = (frameIndex + 1) % source.frameCount;
+    const currentPts = sourceFrameTimesUs[frameIndex] ?? 0;
+    const nextPts = nextIndex === 0
+      ? Math.max(currentPts + 1, source.durationMs * 1000)
+      : (sourceFrameTimesUs[nextIndex] ?? currentPts + 1);
+    const fallbackDelay = 1000 / Math.max(1, source.fps || 24);
+    const delayMs = Math.max(1, (nextPts > currentPts ? nextPts - currentPts : fallbackDelay * 1000) / 1000);
+    const timer = window.setTimeout(() => setFrameIndex(nextIndex), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [playing, source, frameIndex, sourceFrameTimesUs]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -297,7 +343,8 @@ export function Workspace({
   async function onFile(file: File) {
     if (!project) return;
     try {
-      const id = await importVideo(project.id, file, fps);
+      // Browser fallback only: native Android import indexes every source frame and uses source PTS.
+      const id = await importVideo(project.id, file, 24);
       setFrameIndex(0);
       void navigate({
         to: "/projects/$projectId",
@@ -407,23 +454,11 @@ export function Workspace({
               ))}
             </Select>
           </label>
-          <label className="studio-rate flex shrink-0 items-center gap-2 rounded-xl px-2.5">
-            <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">
-              Capture
+          {videoSource ? (
+            <span className="hidden shrink-0 rounded-xl border border-line px-2.5 py-2 font-mono text-[10px] text-muted sm:inline-flex">
+              {videoSource.hasVariableFrameRate ? "VFR" : (videoSource.nominalFrameRate || videoSource.averageFrameRate).toFixed(2) + " FPS"}
             </span>
-            <Select
-              className="w-[5.25rem] border-0 bg-transparent px-1"
-              aria-label="Extract frame rate"
-              value={fps}
-              onChange={(event) => setFps(Number(event.target.value))}
-            >
-              {[4, 8, 12, 24].map((value) => (
-                <option key={value} value={value}>
-                  {value} fps
-                </option>
-              ))}
-            </Select>
-          </label>
+          ) : null}
           <input
             ref={fileRef}
             className="sr-only"
@@ -457,6 +492,107 @@ export function Workspace({
           </Button>
         </div>
 
+        {source ? (
+          <section className="studio-timeline shrink-0 border-b border-line bg-surface px-3 py-2.5 sm:px-5" aria-label="Video timeline">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                aria-label="Previous frame"
+                title="Previous frame"
+                className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+                onClick={() => { setPlaying(false); setFrameIndex((value) => Math.max(0, value - 1)); }}
+              >
+                <ChevronLeft className="size-5" aria-hidden="true" />
+              </button>
+              <output className="min-w-0 flex-1 text-center font-mono text-sm tabular-nums" aria-live="off">
+                {formatTimelineTime(selectedTimeMs)}
+              </output>
+              <span className="shrink-0 text-[10px] text-muted">Frame {frameIndex + 1}/{source.frameCount}</span>
+              <button
+                type="button"
+                aria-label="Next frame"
+                title="Next frame"
+                className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+                onClick={() => { setPlaying(false); setFrameIndex((value) => Math.min(source.frameCount - 1, value + 1)); }}
+              >
+                <ChevronRight className="size-5" aria-hidden="true" />
+              </button>
+            </div>
+            <input
+              type="range"
+              aria-label="Seek by video time in seconds"
+              min={0}
+              max={Math.max(1, source.durationMs)}
+              step={1}
+              value={Math.min(Math.max(0, source.durationMs), selectedTimeMs)}
+              onChange={(event) => {
+                setPlaying(false);
+                setFrameIndex(nearestFrameIndexForTime(sourceFrameTimesUs, Number(event.target.value) * 1000));
+              }}
+              className="mt-1.5 h-5 w-full cursor-pointer accent-amber"
+            />
+            <div className="flex justify-between font-mono text-[9px] text-muted">
+              <span>00:00.000</span>
+              <span>{formatTimelineTime(source.durationMs)}</span>
+            </div>
+          </section>
+        ) : null}
+        {videoSource ? (
+          <details className="shrink-0 border-b border-line bg-bg px-4 py-2">
+            <summary className="cursor-pointer list-none text-xs font-medium text-muted">
+              Video metadata · {videoSource.width}×{videoSource.height} · {videoSource.frameCount.toLocaleString()} indexed frames
+            </summary>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 py-3 text-xs sm:grid-cols-3">
+              <div><p className="text-muted">Duration</p><p className="font-mono">{formatTimelineTime(videoSource.durationMs)}</p></div>
+              <div><p className="text-muted">Original / nominal FPS</p><p className="font-mono">{videoSource.nominalFrameRate > 0 ? videoSource.nominalFrameRate.toFixed(3) : "Not reported"}</p></div>
+              <div><p className="text-muted">Measured average FPS</p><p className="font-mono">{videoSource.averageFrameRate > 0 ? videoSource.averageFrameRate.toFixed(3) : "Not available"}</p></div>
+              <div><p className="text-muted">Capture FPS</p><p className="font-mono">{videoSource.captureFrameRate ? videoSource.captureFrameRate.toFixed(3) : "Not reported"}</p></div>
+              <div><p className="text-muted">Video codec</p><p className="break-all">{videoSource.videoMimeType || "Unknown"}</p></div>
+              <div><p className="text-muted">Video bitrate</p><p className="font-mono">{videoSource.videoBitrate > 0 ? Math.round(videoSource.videoBitrate / 1000) + " kb/s" : "Not reported"}</p></div>
+              <div><p className="text-muted">Rotation</p><p className="font-mono">{videoSource.rotation}°</p></div>
+              <div><p className="text-muted">Frame timing</p><p>{videoSource.hasVariableFrameRate ? "Variable frame rate" : "Constant / not flagged VFR"}</p></div>
+              <div><p className="text-muted">Timestamp index</p><p>{videoSource.frameIndexVerified ? "Metadata count verified" : "Built; independent count not verified"}</p></div>
+              <div><p className="text-muted">Audio</p><p>{videoSource.hasAudio ? (videoSource.audioMimeType || "Audio track") : "No audio track"}</p></div>
+              {videoSource.audioChannels ? <div><p className="text-muted">Audio channels</p><p>{videoSource.audioChannels}</p></div> : null}
+              {videoSource.audioSampleRate ? <div><p className="text-muted">Audio sample rate</p><p>{videoSource.audioSampleRate.toLocaleString()} Hz</p></div> : null}
+              {videoSource.audioBitrate ? <div><p className="text-muted">Audio bitrate</p><p>{Math.round(videoSource.audioBitrate / 1000)} kb/s</p></div> : null}
+            </div>
+            <div className="border-t border-line py-2">
+              <h3 className="text-xs font-semibold">Embedded / EXIF-style metadata</h3>
+              <p className="mt-1 text-[10px] leading-4 text-muted">Video containers do not always contain a standalone EXIF block. These are the date, location and descriptive tags Android can read from this file.</p>
+              {Object.keys(videoSource.embeddedMetadata ?? {}).length ? (
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  {Object.entries(videoSource.embeddedMetadata ?? {}).map(([key, value]) => (
+                    <div key={key} className="min-w-0"><dt className="text-muted">{key}</dt><dd className="break-words">{value}</dd></div>
+                  ))}
+                </dl>
+              ) : <p className="mt-2 text-xs text-muted">No embedded descriptive tags were exposed by Android for this file.</p>}
+            </div>
+            {videoSource.tracks?.length ? (
+              <div className="border-t border-line py-2">
+                <h3 className="text-xs font-semibold">Media tracks</h3>
+                <div className="mt-2 space-y-2">
+                  {videoSource.tracks.map((track) => (
+                    <div key={track.trackIndex} className="rounded-md bg-surface p-2 text-[11px]">
+                      <p className="font-medium">Track {track.trackIndex} · {track.mimeType}</p>
+                      <p className="mt-1 text-muted">
+                        {[track.width && track.height ? track.width + "×" + track.height : null,
+                          track.frameRate ? track.frameRate + " fps" : null,
+                          track.channelCount ? track.channelCount + " channels" : null,
+                          track.sampleRate ? track.sampleRate.toLocaleString() + " Hz" : null,
+                          track.bitRate ? Math.round(track.bitRate / 1000) + " kb/s" : null,
+                          track.durationUs ? formatTimelineTime(track.durationUs / 1000) : null,
+                          track.profile ? "profile " + track.profile : null,
+                          track.level ? "level " + track.level : null,
+                          track.language].filter(Boolean).join(" · ")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </details>
+        ) : null}
         <main className="flex min-h-0 flex-1 flex-col">
           {!source ? (
             <div className="m-auto max-w-md px-6 py-10 text-center">
