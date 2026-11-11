@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { frameKey, idbGet } from "@/lib/studio/idb";
-import type { FrameEdit, Region, Source } from "@/lib/studio/types";
+import type { FrameAsset, FrameEdit, Region, Source } from "@/lib/studio/types";
 
-export function useBaseFrames(source: Source | undefined) {
+export function useBaseFrames(source: Source | undefined, frameAssets: FrameAsset[] = []) {
   const [urls, setUrls] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
 
   const frameCount = source?.frameCount ?? 0;
   const sourceId = source?.id;
+  const nativeAssets = useMemo(
+    () =>
+      frameAssets
+        .filter((asset) => asset.sourceVideoId === sourceId)
+        .sort((a, b) => a.frameIndex - b.frameIndex),
+    [frameAssets, sourceId],
+  );
 
   useEffect(() => {
     if (!sourceId || !frameCount) {
@@ -17,6 +25,11 @@ export function useBaseFrames(source: Source | undefined) {
     let cancelled = false;
     const created: string[] = [];
     setLoading(true);
+    if (nativeAssets.length === frameCount) {
+      setUrls(nativeAssets.map((asset) => Capacitor.convertFileSrc(asset.fullResolutionPath)));
+      setLoading(false);
+      return () => undefined;
+    }
     void (async () => {
       const next: string[] = [];
       for (let start = 0; start < frameCount; start += 12) {
@@ -43,7 +56,7 @@ export function useBaseFrames(source: Source | undefined) {
       cancelled = true;
       created.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [sourceId, frameCount]);
+  }, [sourceId, frameCount, nativeAssets]);
 
   return { urls, loading };
 }
@@ -108,7 +121,9 @@ export function useRegionAssets(sourceId: string | undefined, regions: Region[])
     void (async () => {
       const next: Record<string, string> = {};
       const assets = regions.filter((region) => region.sourceId === sourceId && region.blobKey);
-      const blobs = await Promise.all(assets.map((region) => idbGet<Blob>("blobs", region.blobKey as string)));
+      const blobs = await Promise.all(
+        assets.map((region) => idbGet<Blob>("blobs", region.blobKey as string)),
+      );
       assets.forEach((region, index) => {
         const blob = blobs[index];
         if (!blob) return;

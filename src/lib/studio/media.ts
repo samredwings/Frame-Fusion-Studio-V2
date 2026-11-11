@@ -4,7 +4,6 @@ import type { Grade, Region } from "@/lib/studio/types";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
 const MEDIA_WAIT_TIMEOUT_MS = 15_000;
-export const MAX_CAPTURE_SECONDS = 6;
 
 export function loadImage(src: string): Promise<HTMLImageElement> {
   const hit = imageCache.get(src);
@@ -22,13 +21,26 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   return pending;
 }
 
-export function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+export function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number,
+): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Could not encode a frame."))), type, quality);
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("Could not encode a frame."))),
+      type,
+      quality,
+    );
   });
 }
 
-function waitForMediaState(video: HTMLVideoElement, readyState: number, events: string[], message: string): Promise<void> {
+function waitForMediaState(
+  video: HTMLVideoElement,
+  readyState: number,
+  events: string[],
+  message: string,
+): Promise<void> {
   if (video.readyState >= readyState) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
@@ -64,8 +76,12 @@ async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
       return;
     }
     if (Math.abs(video.currentTime - t) < 0.001) {
-      void waitForMediaState(video, 2, ["loadeddata", "canplay"], "This browser timed out while decoding that video.")
-        .then(resolve, reject);
+      void waitForMediaState(
+        video,
+        2,
+        ["loadeddata", "canplay"],
+        "This browser timed out while decoding that video.",
+      ).then(resolve, reject);
       return;
     }
     const timeout = window.setTimeout(() => {
@@ -79,8 +95,12 @@ async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
     };
     const onSeeked = () => {
       cleanup();
-      void waitForMediaState(video, 2, ["loadeddata", "canplay"], "This browser timed out while decoding that video.")
-        .then(resolve, reject);
+      void waitForMediaState(
+        video,
+        2,
+        ["loadeddata", "canplay"],
+        "This browser timed out while decoding that video.",
+      ).then(resolve, reject);
     };
     const onError = () => {
       cleanup();
@@ -100,12 +120,13 @@ async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
 export async function extractVideoFrames(
   file: File,
   fps: number,
-  maxFrames: number,
+  batchSize: number,
   onProgress: (done: number, total: number) => void,
-): Promise<{ width: number; height: number; duration: number; frames: Blob[] }> {
+  onBatch: (startIndex: number, frames: Blob[]) => Promise<void>,
+): Promise<{ width: number; height: number; duration: number; frameCount: number }> {
   if (!Number.isFinite(fps) || fps <= 0) throw new Error("Choose a frame rate greater than zero.");
-  if (!Number.isInteger(maxFrames) || maxFrames < 1) throw new Error("The frame limit must be a positive integer.");
-
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64)
+    throw new Error("Choose a frame batch size between 1 and 64.");
   const url = URL.createObjectURL(file);
   const video = document.createElement("video");
   video.muted = true;
@@ -120,35 +141,33 @@ export async function extractVideoFrames(
       "This browser timed out while reading that video.",
     );
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
-    if (!video.videoWidth || !video.videoHeight || duration <= 0) {
+    if (!video.videoWidth || !video.videoHeight || duration <= 0)
       throw new Error("That file has no playable picture.");
-    }
-    const sized = evenSize(video.videoWidth, video.videoHeight, 960);
-    // Keep the first sampled segment bounded. ceil() includes a final sample for
-    // non-integral durations; maxFrames caps long clips to a predictable workload.
-    const count = Math.min(maxFrames, Math.max(1, Math.ceil(duration * fps)));
+    const sized = evenSize(
+      video.videoWidth,
+      video.videoHeight,
+      Math.max(video.videoWidth, video.videoHeight),
+    );
+    const count = Math.max(1, Math.ceil(duration * fps));
     const canvas = document.createElement("canvas");
     canvas.width = sized.width;
     canvas.height = sized.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Could not draw frames.");
-    const frames: Blob[] = [];
-    const pending: Promise<Blob>[] = [];
+    let batch: Blob[] = [];
+    let batchStart = 0;
     for (let i = 0; i < count; i++) {
       await seekTo(video, i / fps);
       ctx.drawImage(video, 0, 0, sized.width, sized.height);
-      const encoding = canvasToBlob(canvas, "image/jpeg", 0.84);
-      void encoding.catch(() => undefined);
-      pending.push(encoding);
+      batch.push(await canvasToBlob(canvas, "image/jpeg", 0.92));
       onProgress(i + 1, count);
-      if (pending.length >= 6) frames.push(...(await Promise.all(pending.splice(0))));
+      if (batch.length >= batchSize || i === count - 1) {
+        await onBatch(batchStart, batch);
+        batchStart += batch.length;
+        batch = [];
+      }
     }
-    frames.push(...(await Promise.all(pending)));
-    // Only the first count / fps seconds are represented by these frames. Store
-    // that processed duration rather than the full input duration, otherwise
-    // playback/export metadata claims to cover footage that was never imported.
-    const capturedDuration = count / fps;
-    return { width: sized.width, height: sized.height, duration: capturedDuration, frames };
+    return { width: sized.width, height: sized.height, duration, frameCount: count };
   } finally {
     URL.revokeObjectURL(url);
     video.src = "";
@@ -200,7 +219,12 @@ export async function recordFrames(
   width: number,
   height: number,
   fps: number,
-  paint: (ctx: CanvasRenderingContext2D, index: number, base: HTMLImageElement, replacement: HTMLImageElement | null) => void,
+  paint: (
+    ctx: CanvasRenderingContext2D,
+    index: number,
+    base: HTMLImageElement,
+    replacement: HTMLImageElement | null,
+  ) => void,
   onProgress: (index: number) => void,
 ): Promise<Blob> {
   const mime = pickMime();
@@ -225,7 +249,10 @@ export async function recordFrames(
     if (!first) throw new Error("Nothing to export.");
     paint(ctx, 0, first, replacements[0] ?? null);
     stream = canvas.captureStream(fps);
-    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: width >= 900 ? 5_000_000 : 2_400_000 });
+    recorder = new MediaRecorder(stream, {
+      mimeType: mime,
+      videoBitsPerSecond: width >= 900 ? 5_000_000 : 2_400_000,
+    });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (event) => {
       if (event.data.size) chunks.push(event.data);
@@ -264,12 +291,15 @@ export async function recordFrames(
 
 export function activeRegions(regions: Region[], sourceId: string, frameIndex: number): Region[] {
   return regions.filter(
-    (region) => region.sourceId === sourceId && frameIndex >= region.frameIn && frameIndex <= region.frameOut,
+    (region) =>
+      region.sourceId === sourceId && frameIndex >= region.frameIn && frameIndex <= region.frameOut,
   );
 }
 
 export function cssGrade(grade: Grade | null): string {
-  return grade ? `brightness(${grade.brightness}%) contrast(${grade.contrast}%) saturate(${grade.saturate}%)` : "none";
+  return grade
+    ? `brightness(${grade.brightness}%) contrast(${grade.contrast}%) saturate(${grade.saturate}%)`
+    : "none";
 }
 
 export { renderFrame };

@@ -4,7 +4,10 @@
   "sideEffects": false,
   "type": "module",
   "overrides": {
-    "nf3": "0.3.17"
+    "nf3": "0.3.17",
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.5"
+    }
   },
   "scripts": {
     "dev": "node scripts/with-app-env.mjs vite dev --host 0.0.0.0 --port 8080",
@@ -26,7 +29,7 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
-    "@capacitor/cli": "^8.5.3",
+    "@capacitor/cli": "^8.6.0",
     "@capacitor/core": "^8.5.3",
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/share": "^8.0.3",
@@ -63,7 +66,7 @@
     "@tanstack/react-table": "^8.21.0",
     "@tanstack/router-plugin": "^1.168.0",
     "@vitejs/plugin-react": "^5.2.0",
-    "better-auth": "~1.6.30",
+    "better-auth": "^1.7.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
@@ -88,7 +91,7 @@
     "typescript": "^5.7.0",
     "vaul": "^1.1.2",
     "vite": "^8.2.0",
-    "zod": "^4.4.0",
+    "zod": "^4.6.7",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
