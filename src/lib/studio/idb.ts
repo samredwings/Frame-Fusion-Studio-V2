@@ -1,5 +1,5 @@
 const DB_NAME = "frame-fusion";
-const VERSION = 3;
+const VERSION = 4;
 const STORES = [
   "projects",
   "sources",
@@ -24,7 +24,11 @@ const STORES = [
 ] as const;
 
 const INDEXES: Record<string, Array<{ name: string; keyPath: string }>> = {
-  videoSources: [{ name: "projectId", keyPath: "projectId" }],
+  videoSources: [
+    { name: "projectId", keyPath: "projectId" },
+    // A VideoSource row's primary id is the sourceVideoId referenced by child stores.
+    { name: "sourceVideoId", keyPath: "id" },
+  ],
   frameAssets: [
     { name: "projectId", keyPath: "projectId" },
     { name: "sourceVideoId", keyPath: "sourceVideoId" },
@@ -35,7 +39,10 @@ const INDEXES: Record<string, Array<{ name: string; keyPath: string }>> = {
     { name: "sourceVideoId", keyPath: "sourceVideoId" },
     { name: "frameIndex", keyPath: "frameIndex" },
   ],
-  repairManifests: [{ name: "projectId", keyPath: "projectId" }],
+  repairManifests: [
+    { name: "projectId", keyPath: "projectId" },
+    { name: "sourceVideoId", keyPath: "sourceVideoId" },
+  ],
   renderJobs: [
     { name: "projectId", keyPath: "projectId" },
     { name: "sourceVideoId", keyPath: "sourceVideoId" },
@@ -112,6 +119,48 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
 export type IDBBatchOperation =
   | { kind: "put"; store: string; key: string; value: unknown }
   | { kind: "delete"; store: string; key: string };
+
+/**
+ * Runtime schema audit used by diagnostics and smoke tests. The database is
+ * opened/upgraded before metadata is read, so missing v4 indexes are created
+ * for existing installations as well as fresh installs.
+ */
+export async function verifyStudioMediaSchema(): Promise<{
+  version: number;
+  missingStores: string[];
+  missingIndexes: Array<{ store: string; index: string; keyPath: string }>;
+}> {
+  const db = await openDb();
+  const requiredStores = [
+    "videoSources",
+    "frameAssets",
+    "editedImages",
+    "repairManifests",
+    "renderJobs",
+    "detectedWatermarks",
+    "watermarkRemovals",
+    "textRemovals",
+  ];
+  const missingStores = requiredStores.filter((name) => !db.objectStoreNames.contains(name));
+  const missingIndexes: Array<{ store: string; index: string; keyPath: string }> = [];
+  for (const storeName of requiredStores) {
+    if (!db.objectStoreNames.contains(storeName)) continue;
+    const tx = db.transaction(storeName, "readonly");
+    const store = tx.objectStore(storeName);
+    const expected = INDEXES[storeName] ?? [];
+    for (const index of expected) {
+      if (!store.indexNames.contains(index.name)) {
+        missingIndexes.push({ store: storeName, index: index.name, keyPath: index.keyPath });
+        continue;
+      }
+      const actual = store.index(index.name).keyPath;
+      if (actual !== index.keyPath) {
+        missingIndexes.push({ store: storeName, index: index.name, keyPath: index.keyPath });
+      }
+    }
+  }
+  return { version: db.version, missingStores, missingIndexes };
+}
 
 export async function idbBatch(operations: IDBBatchOperation[]): Promise<void> {
   if (!operations.length) return;

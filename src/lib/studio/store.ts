@@ -391,14 +391,63 @@ export const useStudio = create<StudioState>((set, get) => ({
     const sourceId = crypto.randomUUID();
     const savedAssetIds: string[] = [];
     let selectedUri: string | null = null;
-    let progressHandle: { remove: () => Promise<void> } | null = null;
     set({ busy: "Choose a source video…", error: null, notice: null });
     try {
       const picked = await FrameExtractor.pickVideo();
       selectedUri = picked.uri;
-      set({ busy: "Reading video metadata…" });
-      const info = await FrameExtractor.getVideoInfo(picked.uri);
-      const index = await FrameExtractor.buildFrameIndex(picked.uri);
+      set({ busy: "Reading video metadata and building the native timestamp index…" });
+      const fpsFallback = 24;
+      const role: SourceRole = get().sources.some((source) => source.projectId === projectId)
+        ? "compare"
+        : "primary";
+      const now = Date.now();
+      const extraction = await extractVideoFrames(
+        { uri: picked.uri },
+        fpsFallback,
+        250,
+        (done, total) => {
+          set({ busy: `Extracting native frame ${done} of ${total}` });
+        },
+        async (start, batch) => {
+          const durations = new Map(
+            batch.timestamps.entries.map((entry) => [entry.frameIndex, entry.durationUs]),
+          );
+          const assets: FrameAsset[] = batch.frames.map((frame) => ({
+            id: sourceId + ":" + frame.frameIndex,
+            projectId,
+            sourceVideoId: sourceId,
+            frameIndex: frame.frameIndex,
+            presentationTimeUs: frame.presentationTimeUs,
+            durationUs: durations.get(frame.frameIndex) ?? 0,
+            fullResolutionPath: frame.outputPath,
+            width: frame.width,
+            height: frame.height,
+            fileSize: frame.fileSize,
+            extractionMethod: "all",
+            isEdited: false,
+            isReplacementCandidate: false,
+            exactFrameIndex: frame.exactFrameIndex && batch.indexVerified,
+            createdAt: now,
+          }));
+          const expected = batch.frames.length;
+          if (assets.length !== expected || assets[0]?.frameIndex !== start)
+            throw new Error(`Native extraction returned an invalid frame batch starting at ${start}.`);
+          await idbBatch(
+            assets.map((asset) => ({
+              kind: "put" as const,
+              store: "frameAssets",
+              key: asset.id,
+              value: asset,
+            })),
+          );
+          savedAssetIds.push(...assets.map((asset) => asset.id));
+          const savedIds = new Set(savedAssetIds);
+          set({
+            frameAssets: [...get().frameAssets.filter((asset) => !savedIds.has(asset.id)), ...assets],
+          });
+        },
+      );
+      const { info, index } = extraction;
       if (index.frameCount < 1) throw new Error("No video frames could be indexed.");
       const fps =
         index.averageFrameRate > 0
@@ -406,10 +455,6 @@ export const useStudio = create<StudioState>((set, get) => ({
           : index.nominalFrameRate > 0
             ? index.nominalFrameRate
             : 24;
-      const role: SourceRole = get().sources.some((source) => source.projectId === projectId)
-        ? "compare"
-        : "primary";
-      const now = Date.now();
       const rotation = [0, 90, 180, 270].includes(info.rotation)
         ? (info.rotation as 0 | 90 | 180 | 270)
         : 0;
@@ -439,66 +484,6 @@ export const useStudio = create<StudioState>((set, get) => ({
         importedAt: now,
         updatedAt: now,
       };
-      progressHandle = await FrameExtractor.addProgressListener((event) => {
-        set({
-          busy:
-            "Extracting native frame " +
-            event.currentFrame +
-            " of " +
-            event.totalFrames +
-            " (" +
-            event.progressPercent +
-            "%)",
-        });
-      });
-      const chunkSize = 250;
-      for (let start = 0; start < index.frameCount; start += chunkSize) {
-        const end = Math.min(index.frameCount - 1, start + chunkSize - 1);
-        set({
-          busy: "Indexing frames " + (start + 1) + "–" + (end + 1) + " of " + index.frameCount,
-        });
-        const [timestamps, extracted] = await Promise.all([
-          FrameExtractor.getFrameTimestampPage(picked.uri, start, end - start + 1),
-          FrameExtractor.extractFrameRange(picked.uri, start, end, 0, 95),
-        ]);
-        const durations = new Map(
-          timestamps.entries.map((entry) => [entry.frameIndex, entry.durationUs]),
-        );
-        const assets: FrameAsset[] = extracted.frames.map((frame) => ({
-          id: sourceId + ":" + frame.frameIndex,
-          projectId,
-          sourceVideoId: sourceId,
-          frameIndex: frame.frameIndex,
-          presentationTimeUs: frame.presentationTimeUs,
-          durationUs: durations.get(frame.frameIndex) ?? 0,
-          fullResolutionPath: frame.outputPath,
-          width: frame.width,
-          height: frame.height,
-          fileSize: frame.fileSize,
-          extractionMethod: "all",
-          isEdited: false,
-          isReplacementCandidate: false,
-          exactFrameIndex: frame.exactFrameIndex && index.indexVerified,
-          createdAt: now,
-        }));
-        if (assets.length !== end - start + 1)
-          throw new Error(
-            "Native extraction returned " + assets.length + " of " + (end - start + 1) + " frames.",
-          );
-        await idbBatch(
-          assets.map((asset) => ({
-            kind: "put" as const,
-            store: "frameAssets",
-            key: asset.id,
-            value: asset,
-          })),
-        );
-        savedAssetIds.push(...assets.map((asset) => asset.id));
-        const savedIds = new Set(savedAssetIds);
-        set({
-          frameAssets: [...get().frameAssets.filter((asset) => !savedIds.has(asset.id)), ...assets],
-        });
-      }
       const legacySource: Source = {
         id: sourceId,
         projectId,
@@ -555,8 +540,6 @@ export const useStudio = create<StudioState>((set, get) => ({
         error: error instanceof Error ? error.message : "Native video import failed.",
       });
       throw error;
-    } finally {
-      await progressHandle?.remove().catch(() => undefined);
     }
   },
   deleteSource: async (id) => {

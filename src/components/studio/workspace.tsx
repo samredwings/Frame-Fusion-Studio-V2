@@ -65,6 +65,7 @@ export function Workspace({
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
   const [frameIndex, setFrameIndex] = useState(0);
+  const [isNativeAndroid, setIsNativeAndroid] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [fps, setFps] = useState(24);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -228,6 +229,10 @@ export function Workspace({
     }
   }
 
+  useEffect(() => {
+    setIsNativeAndroid(Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android");
+  }, []);
+
   async function onNativeImport() {
     if (!project) return;
     try {
@@ -244,7 +249,7 @@ export function Workspace({
   }
 
   function openVideoPicker() {
-    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") {
+    if (isNativeAndroid) {
       void onNativeImport();
       return;
     }
