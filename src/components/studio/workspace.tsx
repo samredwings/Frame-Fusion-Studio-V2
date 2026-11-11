@@ -507,7 +507,31 @@ export function Workspace({
               <output className="min-w-0 flex-1 text-center font-mono text-sm tabular-nums" aria-live="off">
                 {formatTimelineTime(selectedTimeMs)}
               </output>
-              <span className="shrink-0 text-[10px] text-muted">Frame {frameIndex + 1}/{source.frameCount}</span>
+              <label className="flex shrink-0 items-center gap-1">
+                <span className="sr-only">Seek to time in seconds</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  aria-label="Seek to time in seconds"
+                  min={0}
+                  max={Math.max(0, source.durationMs / 1000)}
+                  step={0.001}
+                  value={(selectedTimeUs / 1_000_000).toFixed(3)}
+                  onChange={(event) => {
+                    const seconds = Number(event.target.value);
+                    if (Number.isFinite(seconds)) {
+                      setPlaying(false);
+                      setFrameIndex(nearestFrameIndexForTime(
+                        sourceFrameTimesUs,
+                        Math.min(source.durationMs, Math.max(0, seconds * 1000)) * 1000,
+                      ));
+                    }
+                  }}
+                  className="h-8 w-[4.75rem] rounded-md border border-line bg-bg px-1 text-center font-mono text-xs tabular-nums"
+                />
+                <span className="text-[10px] text-muted">s</span>
+              </label>
+              <span className="hidden shrink-0 text-[10px] text-muted sm:inline">Frame {frameIndex + 1}/{source.frameCount}</span>
               <button
                 type="button"
                 aria-label="Next frame"
