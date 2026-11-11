@@ -86,6 +86,12 @@ export interface ExtractFrameRangeResult {
   frames: ExtractedFrame[];
 }
 
+export interface ExtractFrameSelectionResult {
+  indexId: string;
+  extractedCount: number;
+  frames: ExtractedFrame[];
+}
+
 export interface GeneratedThumbnail extends ExtractedFrame {
   timestampMs: number;
 }
@@ -173,6 +179,12 @@ export interface FrameExtractorPlugin {
     targetWidth?: number;
     quality?: number;
   }): Promise<ExtractFrameRangeResult>;
+  extractFrameSelection(options: {
+    uri: string;
+    frameIndexes: number[];
+    targetWidth?: number;
+    quality?: number;
+  }): Promise<ExtractFrameSelectionResult>;
   generateThumbnails(options: {
     uri: string;
     count?: number;
@@ -255,105 +267,4 @@ export const FrameExtractor = {
     limit = 500,
   ): Promise<FrameTimestampPage> {
     assertAndroid();
-    return NativeFrameExtractor.getFrameTimestampPage({ uri, startFrameIndex, limit });
-  },
-  extractFrame(
-    uri: string,
-    frameIndex: number,
-    targetWidth = 0,
-    quality = 95,
-  ): Promise<ExtractedFrame> {
-    assertAndroid();
-    return NativeFrameExtractor.extractFrame({ uri, frameIndex, targetWidth, quality });
-  },
-  extractFrameRange(
-    uri: string,
-    startFrameIndex: number,
-    endFrameIndex: number,
-    targetWidth = 0,
-    quality = 95,
-  ): Promise<ExtractFrameRangeResult> {
-    assertAndroid();
-    return NativeFrameExtractor.extractFrameRange({
-      uri,
-      startFrameIndex,
-      endFrameIndex,
-      targetWidth,
-      quality,
-    });
-  },
-  generateThumbnails(uri: string, count = 100, width = 160, quality = 80) {
-    assertAndroid();
-    return NativeFrameExtractor.generateThumbnails({ uri, count, width, quality });
-  },
-  detectWatermark(uri: string, frameIndex: number, detectionMethods: string[] = ["static-region"]) {
-    assertAndroid();
-    return NativeFrameExtractor.detectWatermark({ uri, frameIndex, detectionMethods });
-  },
-  removeWatermark(
-    uri: string,
-    watermarkId: string,
-    bounds: NormalizedRect,
-    startFrameIndex: number,
-    endFrameIndex: number,
-    settings: WatermarkRemovalSettings,
-  ) {
-    assertAndroid();
-    assertRemovalFrameRange(startFrameIndex, endFrameIndex);
-    return NativeFrameExtractor.removeWatermark({
-      uri, watermarkId, bounds, startFrameIndex, endFrameIndex, settings,
-    });
-  },
-  removeText(
-    uri: string,
-    bounds: NormalizedRect,
-    startFrameIndex: number,
-    endFrameIndex: number,
-    settings: WatermarkRemovalSettings,
-    detectionMethod: string = "manual",
-  ) {
-    assertAndroid();
-    assertRemovalFrameRange(startFrameIndex, endFrameIndex);
-    return NativeFrameExtractor.removeText({
-      uri, bounds, startFrameIndex, endFrameIndex, settings, detectionMethod,
-    });
-  },
-  previewRemoval(
-    uri: string,
-    framePath: string,
-    bounds: NormalizedRect,
-    algorithm: string = "naive-diffusion",
-    donorFramePath?: string,
-    featherPx = 8,
-    expansionPx = 4,
-  ) {
-    assertAndroid();
-    return NativeFrameExtractor.previewRemoval({
-      uri, framePath, bounds, algorithm, donorFramePath, featherPx, expansionPx,
-    });
-  },
-  deleteVideoData(uri: string): Promise<{ deleted: boolean; indexId: string }> {
-    assertAndroid();
-    return NativeFrameExtractor.deleteVideoData({ uri });
-  },
-  addProgressListener(listener: (event: ExtractProgressEvent) => void) {
-    assertAndroid();
-    return NativeFrameExtractor.addListener("extractProgress", listener);
-  },
-  addRemovalProgressListener(listener: (event: RemovalProgressEvent) => void) {
-    assertAndroid();
-    return NativeFrameExtractor.addListener("removalProgress", listener);
-  },
-  addRemovalCompleteListener(listener: (event: RemovalResult) => void) {
-    assertAndroid();
-    return NativeFrameExtractor.addListener("removalComplete", listener);
-  },
-  addRemovalErrorListener(listener: (event: RemovalErrorEvent) => void) {
-    assertAndroid();
-    return NativeFrameExtractor.addListener("removalError", listener);
-  },
-  /** Convert an app-private native file path into a URL the Capacitor WebView can display. */
-  toWebViewUrl(nativePath: string): string {
-    return Capacitor.convertFileSrc(nativePath);
-  },
-};
+    retur
