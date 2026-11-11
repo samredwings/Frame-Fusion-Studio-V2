@@ -407,7 +407,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         mimeType: picked.mimeType || null,
         sizeBytes: picked.sizeBytes || 0,
         persistablePermission: picked.persistablePermission,
-        extension: picked.filename.match(/\\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? "unknown",
+        extension: picked.filename.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? "unknown",
       });
       importStage = "video-metadata";
       set({ busy: "Reading video metadata…" });
