@@ -535,6 +535,86 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void extractFrameSelection(PluginCall call) {
+        String uriText = call.getString("uri");
+        JSArray indexes = call.getArray("frameIndexes");
+        int targetWidth = call.getInt("targetWidth", 0);
+        int quality = clamp(call.getInt("quality", 95), 1, 100);
+        if (uriText == null || indexes == null || indexes.length() < 1 ||
+            indexes.length() > MAX_RANGE_SIZE || targetWidth < 0) {
+            call.reject("Provide uri and 1–" + MAX_RANGE_SIZE + " frame indexes.");
+            return;
+        }
+        execute(call, () -> extractSelection(Uri.parse(uriText), indexes, targetWidth, quality));
+    }
+
+    private JSObject extractSelection(Uri uri, JSArray indexes, int targetWidth, int quality) throws Exception {
+        String indexId = sha256(uri.toString());
+        File indexFile = getIndexFile(indexId);
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        JSArray frames = new JSArray();
+        int done = 0;
+        try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
+            int total = index.readInt();
+            index.readLong();
+            retriever.setDataSource(getContext(), uri);
+            File outputDir = getOutputDir("frames", indexId);
+            int previousFrameIndex = -1;
+            for (int position = 0; position < indexes.length(); position++) {
+                int frameIndex = indexes.getInt(position);
+                if (frameIndex < 0 || frameIndex >= total || frameIndex <= previousFrameIndex) {
+                    throw new IllegalArgumentException("Frame indexes must be unique, ascending and inside the source video.");
+                }
+                previousFrameIndex = frameIndex;
+                long pts = readPts(index, frameIndex);
+                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
+                    retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+                if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + ".");
+                try {
+                    if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
+                        int height = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
+                        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, targetWidth, height, true);
+                        if (scaled != bitmap) {
+                            bitmap.recycle();
+                            bitmap = scaled;
+                        }
+                    }
+                    File output = new File(outputDir, String.format(Locale.US, "frame-%09d.jpg", frameIndex));
+                    writeBitmap(bitmap, output, quality);
+                    JSObject frame = new JSObject();
+                    frame.put("frameIndex", frameIndex);
+                    frame.put("presentationTimeUs", pts);
+                    frame.put("outputPath", output.getAbsolutePath());
+                    frame.put("width", bitmap.getWidth());
+                    frame.put("height", bitmap.getHeight());
+                    frame.put("fileSize", output.length());
+                    frame.put("exactFrameIndex", exact);
+                    frames.put(frame);
+                } finally {
+                    if (!bitmap.isRecycled()) bitmap.recycle();
+                }
+                done++;
+                if (done == 1 || done % 5 == 0 || done == indexes.length()) {
+                    JSObject progress = new JSObject();
+                    progress.put("operationId", indexId + ":selection");
+                    progress.put("currentFrame", done);
+                    progress.put("totalFrames", indexes.length());
+                    progress.put("progressPercent", Math.round(done * 100f / indexes.length()));
+                    notifyListeners("extractProgress", progress);
+                }
+            }
+        } finally {
+            retriever.release();
+        }
+        JSObject value = new JSObject();
+        value.put("indexId", indexId);
+        value.put("extractedCount", done);
+        value.put("frames", frames);
+        return value;
+    }
+
+    @PluginMethod
     public void generateThumbnails(PluginCall call) {
         String uriText = call.getString("uri");
         int requestedCount = call.getInt("count", 100);

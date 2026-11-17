@@ -26,6 +26,7 @@ import { FrameTool } from "@/components/studio/frame-tool";
 import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
 import { Button, Select } from "@/components/studio/ui";
+import { ExtractionPanel } from "@/components/studio/extraction-panel";
 
 const toolMeta: Record<ToolId, { label: string; Icon: LucideIcon }> = {
   frames: { label: "Frames", Icon: Film },
@@ -48,6 +49,7 @@ export function Workspace({
   const ready = useStudio((state) => state.ready);
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
+  const videoSources = useStudio((state) => state.videoSources);
   const frameAssets = useStudio((state) => state.frameAssets);
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
@@ -61,6 +63,11 @@ export function Workspace({
     mine.find((item) => item.id === sourceId) ??
     mine.find((item) => item.role === "primary") ??
     mine[0];
+  const nativeVideoSource = videoSources.find((item) => item.id === source?.id);
+  const nativeAssetCount = source
+    ? frameAssets.filter((asset) => asset.sourceVideoId === source.id).length
+    : 0;
+  const isNativeExtractionPending = Boolean(nativeVideoSource && nativeAssetCount === 0);
   const { urls, loading } = useBaseFrames(source, frameAssets);
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
@@ -350,23 +357,25 @@ export function Workspace({
               ))}
             </Select>
           </label>
-          <label className="studio-rate flex shrink-0 items-center gap-2 rounded-xl px-2.5">
-            <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">
-              Capture
-            </span>
-            <Select
-              className="w-[5.25rem] border-0 bg-transparent px-1"
-              aria-label="Extract frame rate"
-              value={fps}
-              onChange={(event) => setFps(Number(event.target.value))}
-            >
-              {[4, 8, 12, 24].map((value) => (
-                <option key={value} value={value}>
-                  {value} fps
-                </option>
-              ))}
-            </Select>
-          </label>
+          {!nativeVideoSource ? (
+            <label className="studio-rate flex shrink-0 items-center gap-2 rounded-xl px-2.5">
+              <span className="hidden font-mono text-[9px] uppercase tracking-wider text-muted sm:block">
+                Capture
+              </span>
+              <Select
+                className="w-[5.25rem] border-0 bg-transparent px-1"
+                aria-label="Extract frame rate"
+                value={fps}
+                onChange={(event) => setFps(Number(event.target.value))}
+              >
+                {[4, 8, 12, 24].map((value) => (
+                  <option key={value} value={value}>
+                    {value} fps
+                  </option>
+                ))}
+              </Select>
+            </label>
+          ) : null}
           <input
             ref={fileRef}
             className="sr-only"
@@ -419,6 +428,8 @@ export function Workspace({
                 Import video
               </Button>
             </div>
+          ) : nativeVideoSource && nativeAssetCount === 0 ? (
+            <ExtractionPanel videoSource={nativeVideoSource} />
           ) : loading || !urls.length ? (
             <p className="m-auto text-sm text-muted" role="status">
               Preparing frame rail…
@@ -500,28 +511,30 @@ export function Workspace({
           )}
         </main>
 
-        <nav
-          className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
-          aria-label="Editor tools"
-        >
-          <div className="min-w-0">
-            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted">Editing</p>
-            <p className="truncate text-sm font-semibold">{toolMeta[tool].label}</p>
-          </div>
-          <Button
-            aria-expanded={editOpen}
-            aria-controls="frame-edit-drawer"
-            className="min-w-28 rounded-xl"
-            onClick={() => {
-              if (tool !== "frames") openTool("frames");
-              setToolsOpen(false);
-              setEditOpen((open) => (tool === "frames" ? !open : true));
-            }}
+        {!isNativeExtractionPending ? (
+          <nav
+            className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
+            aria-label="Editor tools"
           >
-            <SlidersHorizontal className="size-4" aria-hidden="true" />
-            Edit
-          </Button>
-        </nav>
+            <div className="min-w-0">
+              <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted">Editing</p>
+              <p className="truncate text-sm font-semibold">{toolMeta[tool].label}</p>
+            </div>
+            <Button
+              aria-expanded={editOpen}
+              aria-controls="frame-edit-drawer"
+              className="min-w-28 rounded-xl"
+              onClick={() => {
+                if (tool !== "frames") openTool("frames");
+                setToolsOpen(false);
+                setEditOpen((open) => (tool === "frames" ? !open : true));
+              }}
+            >
+              <SlidersHorizontal className="size-4" aria-hidden="true" />
+              Edit
+            </Button>
+          </nav>
+        ) : null}
       </div>
       {toolsOpen ? (
         <div

@@ -219,7 +219,10 @@ export interface FrameAsset {
   id: string;
   projectId: string;
   sourceVideoId: string;
+  /** Position in the selected-frame sequence used by the editor. */
   frameIndex: number;
+  /** Original position in the source timestamp index. */
+  sourceFrameIndex?: number;
   presentationTimeUs: number;
   durationUs: number;
   fullResolutionPath: string;

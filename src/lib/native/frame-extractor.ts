@@ -112,6 +112,12 @@ export interface FrameExtractorPlugin {
     targetWidth?: number;
     quality?: number;
   }): Promise<ExtractFrameRangeResult>;
+  extractFrameSelection(options: {
+    uri: string;
+    frameIndexes: number[];
+    targetWidth?: number;
+    quality?: number;
+  }): Promise<{ indexId: string; extractedCount: number; frames: ExtractedFrame[] }>;
   generateThumbnails(options: {
     uri: string;
     count?: number;
@@ -175,6 +181,20 @@ export const FrameExtractor = {
       uri,
       startFrameIndex,
       endFrameIndex,
+      targetWidth,
+      quality,
+    });
+  },
+  extractFrameSelection(
+    uri: string,
+    frameIndexes: number[],
+    targetWidth = 0,
+    quality = 95,
+  ) {
+    assertAndroid();
+    return NativeFrameExtractor.extractFrameSelection({
+      uri,
+      frameIndexes,
       targetWidth,
       quality,
     });
