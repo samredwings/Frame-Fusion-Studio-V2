@@ -1,15 +1,15 @@
 # Frame Fusion Studio V2 Roadmap
 
-**Status:** Initial roadmap generated 2026-11-17  
+**Status:** Audited against GitHub `main` on 2026-11-17  
 **Product direction:** A dependable video/frame extraction and review studio.
 
-This roadmap combines the latest explicit UI requirements from the project conversation with the previously requested dependency/security work. Proposed items should be checked against the current implementation before being treated as committed scope.
+Checkboxes reflect current source inspection and reproducible checks. The existing native plugin's ability to extract a contiguous frame-index range is not the same as user-configurable time-interval extraction or multiple manual timeline ranges.
 
 ## Phase 0 — Dependency and build health
-- [ ] Re-run full and production-only dependency audits from a clean lockfile install.
-- [ ] Resolve confirmed production vulnerabilities with compatible upgrades.
-- [ ] Verify the build, tests, and native/plugin integration after upgrades.
-- [ ] Record remaining advisories, affected paths, and mitigation decisions.
+- [x] Re-run full and production-only dependency audits from a clean lockfile install.
+- [x] Resolve confirmed production vulnerabilities with compatible upgrades. Current full and production audits both report zero vulnerabilities.
+- [ ] Verify the build, tests, and native/plugin integration after upgrades. Web production build, tests, typecheck and lint pass; Android/native build integration was not verified in this audit.
+- [ ] Record remaining advisories, affected paths, and mitigation decisions. The current audit reports zero advisories; retain a committed audit record for release sign-off.
 
 **Exit criteria:** Reproducible install/build; no unresolved exploitable production issue without a documented decision.
 
@@ -22,6 +22,8 @@ This roadmap combines the latest explicit UI requirements from the project conve
 - [ ] Support multiple independent extraction ranges in one source video.
 - [ ] Show selected range boundaries and estimated extraction output before running.
 
+**Audit note:** The current app includes native video import, frame indexing, timestamp pages, contiguous frame-index range extraction and extraction progress events. The workspace currently processes the full indexed frame range in chunks. The requested 200 ms time interval, interactive two-handle manual range selection, multiple independent ranges and larger playback/configuration view were not found in the current UI.
+
 **Exit criteria:** Users can preview a video, extract at a 200 ms interval, or define several manual ranges and extract each intended segment.
 
 ## Phase 2 — Extraction correctness and performance
@@ -31,7 +33,7 @@ This roadmap combines the latest explicit UI requirements from the project conve
 - [ ] Add progress, cancellation, and clear per-range error reporting.
 - [ ] Avoid unnecessary decoding/reprocessing when multiple ranges are selected.
 
-**Exit criteria:** Extracted frames and timestamps are correct across representative video formats and edge cases.
+**Audit note:** The native extraction interface exposes presentation timestamps, per-frame durations, variable-frame-rate metadata, index verification and extraction progress. These are useful foundations, but end-to-end edge-case coverage and multi-range cancellation/error behavior are not yet demonstrated.
 
 ## Phase 3 — Review and export workflow
 - [ ] Provide a clear frame gallery with timestamp and source-range context.
@@ -45,11 +47,14 @@ This roadmap combines the latest explicit UI requirements from the project conve
 - [ ] Verify plugin/native bridge behavior on supported platforms.
 - [ ] Document supported formats, limitations, and troubleshooting.
 
-## Release gates
-- Dependency audit reviewed and recorded.
-- Interval and manual extraction tests pass.
-- Multiple ranges work in one video.
-- No silent extraction failures; errors are actionable.
+## Audit results — 2026-11-17
+- `npm ci` completed successfully.
+- `npm test`: passed, 59 tests across 18 suites.
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+- `npm run build`: passed; database migration step correctly skipped because `DATABASE_URL` was not configured.
+- `npm audit`: zero vulnerabilities in the full dependency tree.
+- `npm audit --omit=dev`: zero production vulnerabilities.
+- Native Android APK build and device-level extraction behavior were not verified in this run.
 
-## Scope notes
-The larger preview, 200 ms interval mode, manual left/right range selection, and multiple extractions per video are explicit user requirements from the project conversation. Remaining items are proposed engineering and release criteria.
+**Audit conclusion:** Only the two dependency-audit items are checked off. The core requested playback and extraction-control changes remain open.
