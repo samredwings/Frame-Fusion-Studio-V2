@@ -79,9 +79,7 @@ export function Workspace({
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const frameImageRef = useRef<HTMLInputElement>(null);
-  const replaceTarget = useRef<{ sourceId: string; projectId: string; frameIndex: number } | null>(
-    null,
-  );
+  const replaceTargets = useRef<Array<{ sourceId: string; projectId: string; frameIndex: number }>>([]);
 
   useEffect(() => {
     if (!ready || !source || source.id === sourceId) return;
@@ -181,12 +179,7 @@ export function Workspace({
     }
     if (action === "replace") {
       setFrameIndex(index);
-      replaceTarget.current = {
-        sourceId: source.id,
-        projectId: source.projectId,
-        frameIndex: index,
-      };
-      frameImageRef.current?.click();
+      onReplaceFrames([index]);
       return;
     }
     void deleteFrame(source.id, index)
@@ -202,36 +195,49 @@ export function Workspace({
       );
   }
 
-  async function onReplacementImage(file: File) {
-    const target = replaceTarget.current;
-    replaceTarget.current = null;
-    if (!target) return;
-    if (!file.type.startsWith("image/")) {
-      useStudio.setState({ error: "Choose an image file to replace this frame." });
+  function onReplaceFrames(indexes: number[]) {
+    if (!source || !indexes.length) return;
+    replaceTargets.current = [...new Set(indexes)]
+      .sort((left, right) => left - right)
+      .map((frameIndex) => ({ sourceId: source.id, projectId: source.projectId, frameIndex }));
+    frameImageRef.current?.click();
+  }
+
+  async function onReplacementImages(files: File[]) {
+    const targets = replaceTargets.current;
+    replaceTargets.current = [];
+    if (!targets.length || !files.length) return;
+    if (files.length !== targets.length) {
+      useStudio.setState({ error: `Choose exactly ${targets.length} replacement image${targets.length === 1 ? "" : "s"}, in frame order.` });
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      useStudio.setState({ error: "Keep replacement images under 20 MB." });
+    const invalid = files.find((file) => !file.type.startsWith("image/") || file.size > 20 * 1024 * 1024);
+    if (invalid) {
+      useStudio.setState({ error: "Choose image files under 20 MB each." });
       return;
     }
-    const id = crypto.randomUUID();
-    const blobKey = `r:${id}`;
+    const createdBlobKeys: string[] = [];
     try {
-      await idbPut("blobs", blobKey, file);
-      await upsertEdit({
-        id,
-        projectId: target.projectId,
-        sourceId: target.sourceId,
-        frameIndex: target.frameIndex,
-        kind: "replace",
-        blobKey,
-      });
-      useStudio.setState({ notice: `Frame ${target.frameIndex + 1} was replaced.` });
+      for (let index = 0; index < targets.length; index += 1) {
+        const target = targets[index];
+        const file = files[index];
+        const id = crypto.randomUUID();
+        const blobKey = `r:${id}`;
+        createdBlobKeys.push(blobKey);
+        await idbPut("blobs", blobKey, file);
+        await upsertEdit({
+          id,
+          projectId: target.projectId,
+          sourceId: target.sourceId,
+          frameIndex: target.frameIndex,
+          kind: "replace",
+          blobKey,
+        });
+      }
+      useStudio.setState({ notice: `Replaced ${targets.length} frame${targets.length === 1 ? "" : "s"}.` });
     } catch (error) {
-      await idbDel("blobs", blobKey).catch(() => undefined);
-      useStudio.setState({
-        error: error instanceof Error ? error.message : "Could not replace that frame.",
-      });
+      await Promise.all(createdBlobKeys.map((blobKey) => idbDel("blobs", blobKey).catch(() => undefined)));
+      useStudio.setState({ error: error instanceof Error ? error.message : "Could not replace the selected frames." });
     }
   }
 
@@ -392,10 +398,11 @@ export function Workspace({
             className="sr-only"
             type="file"
             accept="image/*"
+            multiple
             onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              if (file) void onReplacementImage(file);
-              else replaceTarget.current = null;
+              const files = Array.from(event.currentTarget.files ?? []);
+              if (files.length) void onReplacementImages(files);
+              else replaceTargets.current = [];
               event.currentTarget.value = "";
             }}
           />
@@ -445,6 +452,7 @@ export function Workspace({
                   onSeek={setFrameIndex}
                   onToggle={() => setPlaying((value) => !value)}
                   onFrameAction={onFrameAction}
+                  onReplaceFrames={onReplaceFrames}
                   previewRef={previewRef}
                   editorOpen={editOpen}
                   onCloseEditor={() => setEditOpen(false)}
@@ -511,7 +519,7 @@ export function Workspace({
           )}
         </main>
 
-        {!isNativeExtractionPending ? (
+        {!isNativeExtractionPending && tool !== "frames" ? (
           <nav
             className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
             aria-label="Editor tools"
@@ -525,9 +533,9 @@ export function Workspace({
               aria-controls="frame-edit-drawer"
               className="min-w-28 rounded-xl"
               onClick={() => {
-                if (tool !== "frames") openTool("frames");
+                openTool("frames");
                 setToolsOpen(false);
-                setEditOpen((open) => (tool === "frames" ? !open : true));
+                setEditOpen(true);
               }}
             >
               <SlidersHorizontal className="size-4" aria-hidden="true" />

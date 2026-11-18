@@ -2,6 +2,7 @@ package com.hasansaimon.framefusionstudio;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ContentValues;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.media.MediaExtractor;
@@ -9,8 +10,11 @@ import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.provider.OpenableColumns;
+import android.provider.MediaStore;
 import android.util.Log;
+import android.util.Base64;
 
 import androidx.annotation.NonNull;
 
@@ -29,6 +33,7 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -81,6 +86,58 @@ public class FrameExtractorPlugin extends Plugin {
     protected void handleOnDestroy() {
         worker.shutdownNow();
         super.handleOnDestroy();
+    }
+
+    @PluginMethod
+    public void saveToDownloads(PluginCall call) {
+        String filename = call.getString("filename");
+        String mimeType = call.getString("mimeType", "application/octet-stream");
+        String base64 = call.getString("dataBase64");
+        if (filename == null || filename.trim().isEmpty() || base64 == null || base64.isEmpty()) {
+            call.reject("filename and dataBase64 are required.");
+            return;
+        }
+        execute(call, () -> {
+            byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+            if (bytes.length == 0) throw new IllegalArgumentException("The selected frame is empty.");
+            String safeName = filename.replaceAll("[^A-Za-z0-9._-]", "_");
+            Uri savedUri;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Frame Fusion");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                savedUri = getContext().getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (savedUri == null) throw new IllegalStateException("Android could not create a file in Downloads.");
+                try (OutputStream output = getContext().getContentResolver().openOutputStream(savedUri, "w")) {
+                    if (output == null) throw new IllegalStateException("Android could not open the Downloads file.");
+                    output.write(bytes);
+                    output.flush();
+                } catch (Exception error) {
+                    getContext().getContentResolver().delete(savedUri, null, null);
+                    throw error;
+                }
+                ContentValues ready = new ContentValues();
+                ready.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                getContext().getContentResolver().update(savedUri, ready, null, null);
+            } else {
+                File downloads = new File(getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Frame Fusion");
+                if (!downloads.exists() && !downloads.mkdirs()) throw new IllegalStateException("Could not create the app Downloads folder.");
+                File outputFile = new File(downloads, safeName);
+                try (FileOutputStream output = new FileOutputStream(outputFile)) {
+                    output.write(bytes);
+                    output.flush();
+                }
+                savedUri = Uri.fromFile(outputFile);
+            }
+            JSObject result = new JSObject();
+            result.put("filename", safeName);
+            result.put("uri", savedUri.toString());
+            result.put("bytes", bytes.length);
+            result.put("folder", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? "Downloads/Frame Fusion" : "Android/data/Frame Fusion/Downloads");
+            return result;
+        });
     }
 
     @PluginMethod

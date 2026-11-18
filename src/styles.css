@@ -516,9 +516,18 @@
 
 .extraction-video {
   display: block;
-  max-height: 58vh;
+  width: 100%;
+  height: min(72dvh, 56rem);
+  min-height: min(26rem, 58dvh);
+  max-height: 78dvh;
   object-fit: contain;
   box-shadow: var(--shadow-raised);
+}
+
+.extraction-video-placeholder {
+  height: min(72dvh, 56rem);
+  min-height: min(26rem, 58dvh);
+  max-height: 78dvh;
 }
 
 .extraction-controls {
@@ -610,7 +619,21 @@
     width: calc(100% - 2rem);
   }
 
-  .extraction-video {
-    max-height: 48vh;
+  .extraction-video,
+  .extraction-video-placeholder {
+    height: min(70dvh, 52rem);
+    min-height: min(24rem, 55dvh);
+    max-height: 76dvh;
   }
+}
+
+
+.frame-actions-bar {
+  border-top: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-surface) 68%, var(--color-bg));
+}
+
+.frame-actions-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

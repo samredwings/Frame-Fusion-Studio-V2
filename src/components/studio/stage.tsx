@@ -14,7 +14,7 @@ export type Guide = {
   label?: string;
 };
 
-export type FrameAction = "edit" | "replace" | "delete";
+export type FrameAction = "edit" | "download" | "replace" | "delete";
 
 export function Stage({
   source,
@@ -36,6 +36,9 @@ export function Stage({
   onSeek,
   onToggle,
   onFrameAction,
+  selectionMode = false,
+  selectedFrames = [],
+  onToggleFrameSelection,
   onPointer,
   previewRef,
 }: {
@@ -58,6 +61,9 @@ export function Stage({
   onSeek: (index: number) => void;
   onToggle: () => void;
   onFrameAction?: (action: FrameAction, index: number) => void;
+  selectionMode?: boolean;
+  selectedFrames?: number[];
+  onToggleFrameSelection?: (index: number) => void;
   onPointer?: (event: { phase: "down" | "move" | "up"; x: number; y: number }) => void;
   previewRef?: React.MutableRefObject<HTMLCanvasElement | null>;
 }) {
@@ -87,6 +93,7 @@ export function Stage({
   }
 
   function startHold(index: number, event: React.PointerEvent<HTMLButtonElement>) {
+    if (selectionMode) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     cancelHold();
     holdTriggered.current = false;
@@ -257,6 +264,11 @@ export function Stage({
               showFrameMenu(index);
             }}
             onClick={() => {
+              if (selectionMode) {
+                onSeek(index);
+                onToggleFrameSelection?.(index);
+                return;
+              }
               if (holdTriggered.current) {
                 holdTriggered.current = false;
                 return;
@@ -266,6 +278,11 @@ export function Stage({
           >
             <img src={url} alt="" draggable={false} loading="lazy" decoding="async" className="pointer-events-none h-full w-full select-none object-cover" />
             <span className="filmstrip-index absolute bottom-1 left-1.5 rounded px-1 font-mono text-[8px]">{String(index + 1).padStart(2, "0")}</span>
+            {selectionMode ? (
+              <span className={`absolute right-1 top-1 grid size-4 place-items-center rounded-full border text-[10px] font-bold ${selectedFrames.includes(index) ? "border-amber bg-amber text-bg" : "border-white/80 bg-black/45 text-white"}`} aria-hidden="true">
+                {selectedFrames.includes(index) ? "✓" : ""}
+              </span>
+            ) : null}
             {marked?.[index] ? <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-amber" /> : null}
           </button>
         ))}
@@ -300,11 +317,14 @@ export function Stage({
               <>
                 <h2 id="frame-actions-title" className="mt-1 font-display text-xl font-semibold">Frame options</h2>
                 <div className="mt-3 grid gap-2">
-                  <button autoFocus type="button" className="studio-sheet-action" onClick={() => runFrameAction("edit")}>
-                    <Film className="size-5 text-amber" aria-hidden="true" /><span><strong>Edit frame</strong><small>Open this frame in the editor</small></span>
+                  <button autoFocus type="button" className="studio-sheet-action" onClick={() => runFrameAction("download")}>
+                    <Film className="size-5 text-amber" aria-hidden="true" /><span><strong>Download frame</strong><small>Save this still to device storage</small></span>
                   </button>
                   <button type="button" className="studio-sheet-action" onClick={() => runFrameAction("replace")}>
                     <ImageIcon className="size-5 text-cyan" aria-hidden="true" /><span><strong>Replace image</strong><small>Use a still from your device</small></span>
+                  </button>
+                  <button type="button" className="studio-sheet-action opacity-55" disabled>
+                    <Film className="size-5 text-muted" aria-hidden="true" /><span><strong>Go to Editing</strong><small>Dedicated image editor is planned</small></span>
                   </button>
                   <button type="button" className="studio-sheet-action text-danger" disabled={source.frameCount <= 1} onClick={() => setConfirmDelete(true)}>
                     <Trash2 className="size-5" aria-hidden="true" /><span><strong>Delete frame</strong><small>{source.frameCount <= 1 ? "Keep at least one frame in a take" : "Remove it and keep edits aligned"}</small></span>

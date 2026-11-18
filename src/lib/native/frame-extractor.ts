@@ -91,6 +91,7 @@ export interface ExtractProgressEvent {
 }
 
 export interface FrameExtractorPlugin {
+  saveToDownloads(options: { filename: string; mimeType: string; dataBase64: string }): Promise<{ filename: string; uri: string; bytes: number; folder: string }>;
   pickVideo(): Promise<PickedVideo>;
   getVideoInfo(options: { uri: string }): Promise<VideoInfo>;
   buildFrameIndex(options: { uri: string }): Promise<FrameIndexResult>;
@@ -140,6 +141,10 @@ function assertAndroid(): void {
 }
 
 export const FrameExtractor = {
+  saveToDownloads(filename: string, mimeType: string, dataBase64: string) {
+    assertAndroid();
+    return NativeFrameExtractor.saveToDownloads({ filename, mimeType, dataBase64 });
+  },
   pickVideo(): Promise<PickedVideo> {
     assertAndroid();
     return NativeFrameExtractor.pickVideo();

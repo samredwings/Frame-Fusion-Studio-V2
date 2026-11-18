@@ -127,7 +127,7 @@ export function ExtractionPanel({ videoSource }: { videoSource: VideoSource }) {
 
       <div className="extraction-preview mx-4 sm:mx-6">
         {videoError ? (
-          <div className="grid aspect-video w-full place-items-center rounded-2xl border border-line bg-surface text-center">
+          <div className="extraction-video-placeholder grid w-full place-items-center rounded-2xl border border-line bg-surface text-center">
             <div className="max-w-sm px-5">
               <Film className="mx-auto size-8 text-muted" aria-hidden="true" />
               <p className="mt-3 text-sm font-medium">Video preview unavailable</p>
@@ -138,7 +138,7 @@ export function ExtractionPanel({ videoSource }: { videoSource: VideoSource }) {
           </div>
         ) : (
           <video
-            className="extraction-video aspect-video w-full rounded-2xl bg-black"
+            className="extraction-video w-full rounded-2xl bg-black"
             src={videoUrl}
             controls
             playsInline

@@ -1,6 +1,6 @@
 # Frame Fusion Studio V2 Roadmap
 
-**Status:** Updated against the extraction workflow implementation on 2026-11-17
+**Status:** Updated against extraction review, multi-select, and device-download changes on 2026-11-18
 **Product direction:** A dependable video/frame extraction and review studio.
 
 Checkboxes reflect code changes and checks completed in this branch. Android device playback and on-device extraction still require a physical device or emulator before release sign-off.
@@ -32,10 +32,14 @@ Checkboxes reflect code changes and checks completed in this branch. Android dev
 - [ ] Verify rotation metadata and unsupported-codec behavior across representative Android devices and video formats.
 
 ## Phase 3 — Review and export workflow
-- [ ] Provide a clear frame gallery with timestamp and source-range context.
-- [ ] Support selecting, removing, and re-exporting extracted frames.
+- [x] Provide a clear frame gallery with current-frame context and accessible frame selection.
+- [x] Add multi-select for extracted frames, including select-all and clear-selection controls.
+- [x] Download multiple selected stills directly to device storage without opening the Share chooser. Android 10+ uses MediaStore Downloads/Frame Fusion; Android 7–9 uses the app's Downloads folder.
+- [x] Replace one or multiple selected frames by choosing the matching image files in frame order.
+- [x] Add current-frame Download and Replace actions; keep the legacy Adjust drawer out of the normal frame-selection workflow.
+- [ ] Build the dedicated, separate InShot-style image-editing page. The Go to Editing action remains intentionally disabled until that page is implemented.
 - [ ] Preserve extraction settings for repeatable runs.
-- [ ] Validate output naming, collision handling, and export completion feedback.
+- [ ] Verify output-name collision behavior and the full Android save flow on a physical device.
 
 ## Phase 4 — Regression and release hardening
 - [x] Add unit tests for interval sampling and manual-range selection.
@@ -56,4 +60,4 @@ Checkboxes reflect code changes and checks completed in this branch. Android dev
 - Interactive Playwright QA: verified 200 ms default, 12-second video metadata, two manual ranges, range endpoint editing, removal, mode switching, and mobile range UI without horizontal overflow. No browser page errors were reported.
 - No attached Android device/emulator was available; runtime video extraction has not been device-tested.
 
-**Current implementation status:** Phase 1 is implemented. Device-level native verification, extraction cancellation, and the review/export workflow remain open.
+**Current implementation status:** Phases 1 and 2 are implemented; the first review/export controls are now in place. Native Android saving has been compiled but still needs confirmation on a physical device. The dedicated InShot-style editor, extraction cancellation, and device-level format verification remain open.
