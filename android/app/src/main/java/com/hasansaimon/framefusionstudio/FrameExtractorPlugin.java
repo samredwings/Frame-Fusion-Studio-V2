@@ -1403,6 +1403,22 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void deleteExtractedFrames(PluginCall call) {
+        String indexId = call.getString("indexId");
+        if (!StorageKey.isValid(indexId)) {
+            call.reject("A valid indexId is required.");
+            return;
+        }
+        execute(call, () -> {
+            StorageKey.deleteExtractedFrames(getContext().getFilesDir(), indexId);
+            JSObject value = new JSObject();
+            value.put("deleted", true);
+            value.put("indexId", indexId);
+            return value;
+        });
+    }
+
+    @PluginMethod
     public void deleteVideoData(PluginCall call) {
         String indexId = call.getString("indexId");
         String uriText = call.getString("uri");
