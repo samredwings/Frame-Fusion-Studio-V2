@@ -1,10 +1,12 @@
 import { useMemo, useRef, useState } from "react";
 import { Clock3, Hand, Plus, Scissors, Trash2, X } from "lucide-react";
-import type { NativeVideoCapturePlan, CaptureMethod, CaptureRange } from "@/lib/studio/extraction-plan";
+import { estimateCaptureFrameCount, type NativeVideoCapturePlan, type CaptureMethod, type CaptureRange, type FrameTimestampLike } from "@/lib/studio/extraction-plan";
 import type { PickedVideo, VideoInfo, FrameIndexResult } from "@/lib/native/frame-extractor";
 import { Button } from "@/components/studio/ui";
 
 type PendingVideo = {
+  sourceId: string;
+  timestamps: FrameTimestampLike[];
   picked: PickedVideo;
   previewUrl: string;
   info: VideoInfo;
@@ -36,12 +38,10 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const isExtracting = Boolean(busy?.startsWith("Reading exact frame timestamps") || busy?.startsWith("Extracting selected frames"));
 
-  const estimatedFrames = useMemo(() => ranges.reduce((total, range) => {
-    const span = range.endMs - range.startMs;
-    return total + (method === "interval"
-      ? Math.max(1, Math.floor(span / intervalMs) + 1)
-      : Math.max(1, Math.ceil((span / 1_000) * (video.index.averageFrameRate || video.index.nominalFrameRate || 24))));
-  }, 0), [ranges, method, intervalMs, video.index.averageFrameRate, video.index.nominalFrameRate]);
+  const estimatedFrames = useMemo(
+    () => estimateCaptureFrameCount(video.timestamps, ranges, method, intervalMs),
+    [video.timestamps, ranges, method, intervalMs],
+  );
 
   function addRange() {
     if (ranges.length >= 25) return;
@@ -77,6 +77,8 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
   function beginExtraction() {
     if (!ranges.length || isExtracting) return;
     onExtract({
+      sourceId: video.sourceId,
+      timestamps: video.timestamps,
       picked: video.picked,
       info: video.info,
       index: video.index,

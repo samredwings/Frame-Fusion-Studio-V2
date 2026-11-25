@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Trash2 } from "lucide-react";
 import { useStudio } from "@/lib/studio/store";
@@ -14,6 +15,13 @@ export function SettingsView({ projectId }: { projectId: string }) {
   const updateProject = useStudio((state) => state.updateProject);
   const deleteProject = useStudio((state) => state.deleteProject);
   const deleteSource = useStudio((state) => state.deleteSource);
+  const orphanedNativeMediaIds = useStudio((state) => state.orphanedNativeMediaIds);
+  const refreshOrphanedNativeMedia = useStudio((state) => state.refreshOrphanedNativeMedia);
+  const cleanupOrphanedNativeMedia = useStudio((state) => state.cleanupOrphanedNativeMedia);
+  const [isNativeAndroid, setIsNativeAndroid] = useState(false);
+  const [scanningNativeMedia, setScanningNativeMedia] = useState(false);
+  const [cleaningNativeMedia, setCleaningNativeMedia] = useState(false);
+  const [nativeCleanupArmed, setNativeCleanupArmed] = useState(false);
   const project = projects.find((item) => item.id === projectId);
   const mine = sources.filter((source) => source.projectId === projectId);
   const [name, setName] = useState(project?.name ?? "");
@@ -21,6 +29,18 @@ export function SettingsView({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<ProjectStatus>(project?.status ?? "draft");
   const [armed, setArmed] = useState(false);
   const [synced, setSynced] = useState(project?.id ?? "");
+
+  useEffect(() => {
+    setIsNativeAndroid(Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android");
+  }, []);
+
+  useEffect(() => {
+    if (!isNativeAndroid) return;
+    setScanningNativeMedia(true);
+    void refreshOrphanedNativeMedia()
+      .catch((error) => useStudio.setState({ error: error instanceof Error ? error.message : "Could not inspect native cache." }))
+      .finally(() => setScanningNativeMedia(false));
+  }, [isNativeAndroid, refreshOrphanedNativeMedia]);
 
   if (project && synced !== project.id) {
     setSynced(project.id);
@@ -99,6 +119,51 @@ export function SettingsView({ projectId }: { projectId: string }) {
           ))}
           {!mine.length ? <p className="text-sm text-muted">No sources yet.</p> : null}
         </section>
+
+        {isNativeAndroid ? (
+          <section className="mt-8 space-y-3 rounded-lg border border-line bg-surface p-4">
+            <div>
+              <h2 className="font-display text-lg">Native media storage</h2>
+              <p className="mt-1 text-sm text-muted">
+                Inspect app-private indexes, frames, thumbnails and repair files. Only storage IDs not referenced by a saved video source can be removed. Nothing is deleted automatically.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm" role="status">
+                {scanningNativeMedia ? "Scanning native storage…" : `${orphanedNativeMediaIds.length} orphaned storage ${orphanedNativeMediaIds.length === 1 ? "entry" : "entries"}`}
+              </p>
+              <Button tone="line" disabled={scanningNativeMedia || cleaningNativeMedia} onClick={() => {
+                setScanningNativeMedia(true);
+                void refreshOrphanedNativeMedia()
+                  .then(() => setNativeCleanupArmed(false))
+                  .catch((error) => useStudio.setState({ error: error instanceof Error ? error.message : "Could not inspect native cache." }))
+                  .finally(() => setScanningNativeMedia(false));
+              }}>Refresh inventory</Button>
+            </div>
+            {orphanedNativeMediaIds.length ? (
+              <div className="space-y-2">
+                <p className="text-xs leading-5 text-muted">These entries are not linked to any current VideoSource. Confirm below to permanently remove the selected orphaned native data. Source files and persisted URI permissions are not changed.</p>
+                <Button tone="danger" disabled={cleaningNativeMedia || scanningNativeMedia} onClick={() => {
+                  if (!nativeCleanupArmed) {
+                    setNativeCleanupArmed(true);
+                    return;
+                  }
+                  setCleaningNativeMedia(true);
+                  void cleanupOrphanedNativeMedia()
+                    .then((deletedCount) => {
+                      setNativeCleanupArmed(false);
+                      useStudio.setState({ notice: `Removed ${deletedCount} orphaned native storage ${deletedCount === 1 ? "entry" : "entries"}.` });
+                    })
+                    .catch((error) => useStudio.setState({ error: error instanceof Error ? error.message : "Could not remove orphaned native media." }))
+                    .finally(() => setCleaningNativeMedia(false));
+                }}>
+                  {cleaningNativeMedia ? "Cleaning…" : nativeCleanupArmed ? `Confirm remove ${orphanedNativeMediaIds.length} entries` : `Remove ${orphanedNativeMediaIds.length} orphaned entries`}
+                </Button>
+                {nativeCleanupArmed ? <Button tone="quiet" disabled={cleaningNativeMedia} onClick={() => setNativeCleanupArmed(false)}>Keep these files</Button> : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         <section className="mt-8 rounded-lg border border-danger/40 p-4">
           <h2 className="font-display text-lg">Delete project</h2>

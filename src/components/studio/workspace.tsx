@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { FrameExtractor, type PickedVideo, type VideoInfo, type FrameIndexResult } from "@/lib/native/frame-extractor";
+import { FrameExtractor, type FrameTimestamp, type PickedVideo, type VideoInfo, type FrameIndexResult } from "@/lib/native/frame-extractor";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -26,6 +26,7 @@ import { FaceTool } from "@/components/studio/face-tool";
 import { FrameTool } from "@/components/studio/frame-tool";
 import { CaptureWizard } from "@/components/studio/capture-wizard";
 import type { NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
+import { pendingCaptureDeleteOptions } from "@/lib/studio/native-ownership";
 import { getAndroidContentPreviewUrl } from "@/lib/native/content-preview";
 import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
@@ -73,7 +74,15 @@ export function Workspace({
   const [isNativeAndroid, setIsNativeAndroid] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [nativePreparing, setNativePreparing] = useState(false);
-  const [pendingCapture, setPendingCapture] = useState<{ picked: PickedVideo; previewUrl: string; info: VideoInfo; index: FrameIndexResult } | null>(null);
+  const [pendingCapture, setPendingCapture] = useState<{
+    sourceId: string;
+    picked: PickedVideo;
+    previewUrl: string;
+    info: VideoInfo;
+    index: FrameIndexResult;
+    timestamps: FrameTimestamp[];
+  } | null>(null);
+  const cleanedCaptureIds = useRef(new Set<string>());
   const [toolsOpen, setToolsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
@@ -239,21 +248,73 @@ export function Workspace({
     setIsNativeAndroid(Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android");
   }, []);
 
+  async function cleanupPendingCapture(capture: NonNullable<typeof pendingCapture>) {
+    if (cleanedCaptureIds.current.has(capture.sourceId)) return;
+    cleanedCaptureIds.current.add(capture.sourceId);
+    await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
+      useStudio.getState().videoSources,
+      { sourceId: capture.sourceId, uri: capture.picked.uri },
+    )).catch(() => undefined);
+  }
+
+  async function cancelPendingCapture() {
+    const capture = pendingCapture;
+    setPendingCapture(null);
+    useStudio.setState({ busy: null });
+    if (capture) await cleanupPendingCapture(capture);
+  }
+
   async function onNativeImport() {
     if (!project || nativePreparing) return;
+    const sourceId = crypto.randomUUID();
+    let pickedForCleanup: PickedVideo | null = null;
     setNativePreparing(true);
     useStudio.setState({ error: null, notice: null, busy: "Choose a source video…" });
     try {
       const picked = await FrameExtractor.pickVideo();
+      pickedForCleanup = picked;
       useStudio.setState({ busy: "Reading video metadata and building the timestamp index…" });
       const [info, index] = await Promise.all([
         FrameExtractor.getVideoInfo(picked.uri),
-        FrameExtractor.buildFrameIndex(picked.uri),
+        FrameExtractor.buildFrameIndex(picked.uri, sourceId),
       ]);
-      if (!index.frameCount || !index.indexId) throw new Error("No frames could be indexed from that video.");
-      setPendingCapture({ picked, previewUrl: getAndroidContentPreviewUrl(picked.uri, window.location.origin), info, index });
+      if (!index.frameCount || index.indexId !== sourceId) {
+        throw new Error("No frames could be indexed with the selected source storage key.");
+      }
+      const timestamps: FrameTimestamp[] = [];
+      const pageSize = 5_000;
+      const pageCount = Math.ceil(index.frameCount / pageSize);
+      for (let start = 0; start < index.frameCount; start += pageSize) {
+        const limit = Math.min(pageSize, index.frameCount - start);
+        const page = await FrameExtractor.getFrameTimestampPage(picked.uri, index.indexId, start, limit);
+        if (page.indexId !== index.indexId || page.startFrameIndex !== start
+          || page.entries.length !== limit || page.totalFrameCount !== index.frameCount) {
+          throw new Error(`The native timestamp index returned an incomplete page at frame ${start}.`);
+        }
+        timestamps.push(...page.entries);
+        useStudio.setState({ busy: `Reading exact frame timestamps… ${Math.min(pageCount, Math.floor(start / pageSize) + 1)} of ${pageCount}` });
+      }
+      if (timestamps.some((entry, indexPosition) => entry.frameIndex !== indexPosition)) {
+        throw new Error("The native timestamp index returned frames out of order.");
+      }
+      cleanedCaptureIds.current.delete(sourceId);
+      setPendingCapture({
+        sourceId,
+        picked,
+        previewUrl: getAndroidContentPreviewUrl(picked.uri, window.location.origin),
+        info,
+        index,
+        timestamps,
+      });
       useStudio.setState({ busy: null });
     } catch (error) {
+      if (pickedForCleanup) {
+        cleanedCaptureIds.current.add(sourceId);
+        await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
+          useStudio.getState().videoSources,
+          { sourceId, uri: pickedForCleanup.uri },
+        )).catch(() => undefined);
+      }
       useStudio.setState({
         busy: null,
         error: error instanceof Error ? error.message : "Could not prepare this video for extraction.",
@@ -275,7 +336,9 @@ export function Workspace({
         search: { tool, source: id },
       });
     } catch {
-      /* The app-level status line explains native extraction failures. */
+      cleanedCaptureIds.current.add(plan.sourceId);
+      setPendingCapture(null);
+      /* The store owns rollback and reports the native extraction error. */
     }
   }
 
@@ -429,7 +492,7 @@ export function Workspace({
             <CaptureWizard
               video={pendingCapture}
               busy={busy}
-              onCancel={() => { setPendingCapture(null); useStudio.setState({ busy: null }); }}
+              onCancel={() => void cancelPendingCapture()}
               onExtract={(plan) => void onNativeCapture(plan)}
             />
           ) : !source ? (
