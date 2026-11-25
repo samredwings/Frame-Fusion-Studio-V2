@@ -62,6 +62,30 @@ public class StorageKeyTest {
         assertTrue(new File(keyBRepairs, "sample.bin").isFile());
     }
     @Test
+    public void deletingExtractedFramesKeepsTheTimestampIndexAndOtherSourceArtifacts() throws IOException {
+        File filesDir = Files.createTempDirectory("frame-fusion-partial-extraction-test").toFile();
+        String indexId = "source-key-0001";
+        File indexFile = StorageKey.resolveIndexPath(filesDir, indexId);
+        File framesDir = StorageKey.resolveOutputDir(filesDir, "frames", indexId);
+        File thumbnailsDir = StorageKey.resolveOutputDir(filesDir, "thumbnails", indexId);
+        File repairsDir = RepairStoragePaths.repairDirectory(filesDir, indexId);
+
+        assertTrue(indexFile.getParentFile().mkdirs() || indexFile.getParentFile().isDirectory());
+        assertTrue(indexFile.createNewFile());
+        for (File directory : new File[] {framesDir, thumbnailsDir, repairsDir}) {
+            assertTrue(directory.mkdirs() || directory.isDirectory());
+            assertTrue(new File(directory, "sample.bin").createNewFile());
+        }
+
+        StorageKey.deleteExtractedFrames(filesDir, indexId);
+
+        assertFalse("partial extracted frame directory must be removed", framesDir.exists());
+        assertTrue("timestamp index must remain available for retry", indexFile.isFile());
+        assertTrue("thumbnail cache must remain untouched", new File(thumbnailsDir, "sample.bin").isFile());
+        assertTrue("repair data must remain untouched", new File(repairsDir, "sample.bin").isFile());
+    }
+
+    @Test
     public void acceptsLegacySha256UriStorageKeys() {
         String legacyUriHash = "a".repeat(64);
         assertTrue(StorageKey.isValid(legacyUriHash));
