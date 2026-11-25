@@ -1,5 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { Workspace } from "@/components/studio/workspace";
+import { createFileRoute, Outlet } from "@tanstack/react-router";
 import { parseTool } from "@/lib/studio/types";
 
 export const Route = createFileRoute("/projects/$projectId")({
@@ -7,11 +6,9 @@ export const Route = createFileRoute("/projects/$projectId")({
     tool: parseTool(search.tool),
     source: typeof search.source === "string" ? search.source : undefined,
   }),
-  component: ProjectPage,
+  component: ProjectLayout,
 });
 
-function ProjectPage() {
-  const { projectId } = Route.useParams();
-  const { tool, source } = Route.useSearch();
-  return <Workspace projectId={projectId} tool={tool} sourceId={source} />;
+function ProjectLayout() {
+  return <Outlet />;
 }

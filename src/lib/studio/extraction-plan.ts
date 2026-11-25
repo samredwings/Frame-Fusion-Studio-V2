@@ -22,6 +22,8 @@ export type PlannedCaptureFrame = {
 };
 
 export type NativeVideoCapturePlan = {
+  sourceId: string;
+  timestamps: FrameTimestampLike[];
   picked: PickedVideo;
   info: VideoInfo;
   index: FrameIndexResult;
@@ -44,6 +46,22 @@ function validateRanges(ranges: CaptureRange[]) {
       throw new Error("Choose a valid time range with an end after its start.");
     }
   }
+}
+
+/** Merge overlapping or endpoint-touching windows so each source frame is counted once. */
+export function mergeCaptureRanges(ranges: CaptureRange[]): CaptureRange[] {
+  if (!ranges.length) return [];
+  const sorted = [...ranges].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const merged: CaptureRange[] = [];
+  for (const current of sorted) {
+    const previous = merged[merged.length - 1];
+    if (!previous || current.startMs > previous.endMs) {
+      merged.push({ ...current });
+      continue;
+    }
+    previous.endMs = Math.max(previous.endMs, current.endMs);
+  }
+  return merged;
 }
 
 function nearestFrame(
@@ -93,7 +111,7 @@ export function selectFramesForCapture(
   }
 
   const selected = new Map<number, PlannedCaptureFrame>();
-  for (const range of ranges) {
+  for (const range of mergeCaptureRanges(ranges)) {
     const startUs = Math.round(range.startMs * 1_000);
     const endUs = Math.round(range.endMs * 1_000);
     let first = 0;
@@ -106,11 +124,13 @@ export function selectFramesForCapture(
       for (let i = first; i < afterLast; i++) {
         const entry = entries[i]!;
         if (!selected.has(entry.frameIndex)) {
+          const owner = ranges.find((candidate) => entry.presentationTimeUs >= candidate.startMs * 1_000
+            && entry.presentationTimeUs <= candidate.endMs * 1_000);
           selected.set(entry.frameIndex, {
             frameIndex: entry.frameIndex,
             presentationTimeUs: entry.presentationTimeUs,
             durationUs: entry.durationUs,
-            sequenceId: range.id,
+            sequenceId: owner?.id ?? range.id,
           });
         }
       }
@@ -120,11 +140,13 @@ export function selectFramesForCapture(
         const entry = nearestFrame(entries, targetUs, first, afterLast);
         if (entry && entry.presentationTimeUs >= startUs && entry.presentationTimeUs <= endUs
           && !selected.has(entry.frameIndex)) {
+          const owner = ranges.find((candidate) => entry.presentationTimeUs >= candidate.startMs * 1_000
+            && entry.presentationTimeUs <= candidate.endMs * 1_000);
           selected.set(entry.frameIndex, {
             frameIndex: entry.frameIndex,
             presentationTimeUs: entry.presentationTimeUs,
             durationUs: entry.durationUs,
-            sequenceId: range.id,
+            sequenceId: owner?.id ?? range.id,
           });
         }
       }
@@ -134,4 +156,16 @@ export function selectFramesForCapture(
   return [...selected.values()].sort(
     (a, b) => a.presentationTimeUs - b.presentationTimeUs || a.frameIndex - b.frameIndex,
   );
+}
+
+
+/** Count the exact de-duplicated source-frame selection shown by the capture wizard. */
+export function estimateCaptureFrameCount(
+  entries: FrameTimestampLike[],
+  ranges: CaptureRange[],
+  method: CaptureMethod,
+  intervalMs: number,
+): number {
+  if (!ranges.length) return 0;
+  return selectFramesForCapture(entries, mergeCaptureRanges(ranges), method, intervalMs).length;
 }

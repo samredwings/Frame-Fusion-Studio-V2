@@ -49,3 +49,43 @@ test("capture planner rejects invalid windows and interval values below 200ms", 
   assert.throws(() => selectFramesForCapture(timestamps, [range("bad", -1, 200)], "manual", 200), /valid time range/);
   assert.throws(() => selectFramesForCapture(timestamps, [range("ok", 0, 200)], "interval", 100), /200ms/);
 });
+
+test("capture ranges merge when they overlap or touch, regardless of input order", async () => {
+  const { mergeCaptureRanges } = await import("./extraction-plan.ts");
+  assert.deepEqual(
+    mergeCaptureRanges([
+      range("later", 500, 800),
+      range("contained", 250, 300),
+      range("first", 0, 500),
+      range("touching", 800, 900),
+    ]).map(({ startMs, endMs }) => [startMs, endMs]),
+    [[0, 900]],
+  );
+});
+
+test("capture range merging handles single-frame and full-index windows", async () => {
+  const { mergeCaptureRanges } = await import("./extraction-plan.ts");
+  assert.deepEqual(
+    mergeCaptureRanges([range("single-b", 20, 20.001), range("single-a", 10, 10.001), range("full", 0, 1_000)])
+      .map(({ startMs, endMs }) => [startMs, endMs]),
+    [[0, 1_000]],
+  );
+});
+
+test("frame estimate equals the de-duplicated manual selection after range merging", async () => {
+  const { estimateCaptureFrameCount } = await import("./extraction-plan.ts");
+  const selected = selectFramesForCapture(
+    timestamps,
+    [range("overlap-a", 0, 500), range("overlap-b", 400, 1_000)],
+    "manual",
+    200,
+  );
+  assert.equal(estimateCaptureFrameCount(timestamps, [range("overlap-a", 0, 500), range("overlap-b", 400, 1_000)], "manual", 200), selected.length);
+  assert.equal(selected.length, 11);
+});
+
+
+test("capture estimate starts at zero before any range is saved", async () => {
+  const { estimateCaptureFrameCount } = await import("./extraction-plan.ts");
+  assert.equal(estimateCaptureFrameCount(timestamps, [], "manual", 200), 0);
+});

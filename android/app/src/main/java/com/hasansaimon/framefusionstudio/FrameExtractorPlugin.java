@@ -223,14 +223,15 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void buildFrameIndex(PluginCall call) {
         String uriText = call.getString("uri");
-        if (uriText == null || uriText.trim().isEmpty()) {
-            call.reject("uri is required.");
+        String storageKey = call.getString("storageKey");
+        if (uriText == null || uriText.trim().isEmpty() || !StorageKey.isValid(storageKey)) {
+            call.reject("uri and a valid 8–64 character storageKey are required.");
             return;
         }
-        execute(call, () -> buildIndex(Uri.parse(uriText)));
+        execute(call, () -> buildIndex(Uri.parse(uriText), storageKey));
     }
 
-    private JSObject buildIndex(Uri uri) throws Exception {
+    private JSObject buildIndex(Uri uri, String storageKey) throws Exception {
         MediaExtractor extractor = new MediaExtractor();
         List<Long> timestamps = new ArrayList<>();
         long durationUs = 0;
@@ -279,8 +280,11 @@ public class FrameExtractorPlugin extends Plugin {
         }
 
         if (timestamps.isEmpty()) throw new IllegalStateException("No video frame timestamps were found.");
-        // A chronological index is required by the editor. Store presentation timestamps,
-        // not decode-order positions or duration × FPS estimates.
+        long[] sourcePts = new long[timestamps.size()];
+        for (int i = 0; i < timestamps.size(); i++) sourcePts[i] = timestamps.get(i);
+        FrameIndexDiagnostics diagnostics = FrameIndexDiagnostics.from(sourcePts, metadataFrameCount);
+        // A chronological index is required by the editor. Keep diagnostics from the
+        // original extractor order separately so sorting cannot hide reordered PTS.
         Collections.sort(timestamps);
         long lastPts = timestamps.get(timestamps.size() - 1);
         if (durationUs <= lastPts) {
@@ -293,10 +297,10 @@ public class FrameExtractorPlugin extends Plugin {
             durationUs = lastPts + fallbackDuration;
         }
 
-        String indexId = sha256(uri.toString());
-        File indexDir = new File(getContext().getFilesDir(), "frame_fusion/indexes");
-        if (!indexDir.exists() && !indexDir.mkdirs()) throw new IllegalStateException("Could not create the video index directory.");
-        File indexFile = new File(indexDir, indexId + ".pts");
+        String indexId = StorageKey.requireValid(storageKey);
+        File indexFile = StorageKey.resolveIndexPath(getContext().getFilesDir(), indexId);
+        File indexDir = indexFile.getParentFile();
+        if (indexDir == null || (!indexDir.exists() && !indexDir.mkdirs())) throw new IllegalStateException("Could not create the video index directory.");
         File tempFile = new File(indexDir, indexId + ".pts.tmp");
 
         try (FileOutputStream fileOut = new FileOutputStream(tempFile);
@@ -317,7 +321,7 @@ public class FrameExtractorPlugin extends Plugin {
             if (spanUs > 0) averageFps = (float) ((frameCount - 1) * 1_000_000.0 / spanUs);
         }
         boolean isVfr = detectVariableFrameRate(timestamps);
-        boolean verified = metadataFrameCount > 0 && metadataFrameCount == frameCount;
+        boolean verified = diagnostics.indexVerified;
 
         JSObject value = new JSObject();
         value.put("uri", uri.toString());
@@ -329,12 +333,17 @@ public class FrameExtractorPlugin extends Plugin {
         value.put("hasVariableFrameRate", isVfr);
         value.put("indexVerified", verified);
         value.put("metadataFrameCount", metadataFrameCount);
-        if (!verified) {
-            String warning = metadataFrameCount <= 0
-                ? "Android did not provide an independent metadata frame count. The sample index was built but has not been cross-checked."
-                : "Android metadata reports " + metadataFrameCount + " frames but the timestamp index contains " + frameCount + " samples.";
-            value.put("warning", warning + " Exact frame reconstruction should remain disabled until this source is validated.");
-        }
+        value.put("ptsMonotonic", diagnostics.ptsMonotonic);
+        value.put("ptsDuplicates", diagnostics.ptsDuplicates);
+        value.put("firstPtsUs", diagnostics.firstPtsUs);
+        value.put("lastPtsUs", diagnostics.lastPtsUs);
+        value.put("maxGapUs", diagnostics.maxGapUs);
+        String warning = isVfr
+            ? "Variable frame rate detected; source PTS retained (first=" + diagnostics.firstPtsUs
+                + "us, last=" + diagnostics.lastPtsUs + "us, max gap=" + diagnostics.maxGapUs
+                + "us). Frame-index identity is not independently guaranteed."
+            : (verified ? "" : "Timestamp count or ordering did not pass independent verification; exact frame identity remains unverified.");
+        value.put("warning", warning);
         return value;
     }
 
@@ -358,17 +367,18 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void getFrameTimestampPage(PluginCall call) {
         String uriText = call.getString("uri");
+        String indexId = call.getString("indexId");
         int start = call.getInt("startFrameIndex", 0);
         int limit = call.getInt("limit", 500);
-        if (uriText == null || start < 0 || limit < 1 || limit > MAX_PAGE_SIZE) {
-            call.reject("uri, a non-negative startFrameIndex and limit between 1 and " + MAX_PAGE_SIZE + " are required.");
+        if (uriText == null || !StorageKey.isValid(indexId) || start < 0 || limit < 1 || limit > MAX_PAGE_SIZE) {
+            call.reject("uri, valid indexId, a non-negative startFrameIndex and limit between 1 and " + MAX_PAGE_SIZE + " are required.");
             return;
         }
-        execute(call, () -> readTimestampPage(Uri.parse(uriText), start, limit));
+        execute(call, () -> readTimestampPage(Uri.parse(uriText), indexId, start, limit));
     }
 
-    private JSObject readTimestampPage(Uri uri, int start, int limit) throws Exception {
-        String indexId = sha256(uri.toString());
+    private JSObject readTimestampPage(Uri uri, String indexId, int start, int limit) throws Exception {
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
             int total = index.readInt();
@@ -405,22 +415,23 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void extractFrame(PluginCall call) {
         String uriText = call.getString("uri");
+        String indexId = call.getString("indexId");
         int frameIndex = call.getInt("frameIndex", -1);
         int targetWidth = call.getInt("targetWidth", 0);
         int quality = clamp(call.getInt("quality", 95), 1, 100);
-        if (uriText == null || frameIndex < 0 || targetWidth < 0) {
-            call.reject("uri, a non-negative frameIndex and non-negative targetWidth are required.");
+        if (uriText == null || !StorageKey.isValid(indexId) || frameIndex < 0 || targetWidth < 0) {
+            call.reject("uri, valid indexId, a non-negative frameIndex and non-negative targetWidth are required.");
             return;
         }
         execute(call, () -> {
             Uri uri = Uri.parse(uriText);
-            File indexFile = getIndexFile(sha256(uriText));
+            File indexFile = getIndexFile(indexId);
             try (RandomAccessFile index = new RandomAccessFile(indexFile, "r")) {
                 int total = index.readInt();
-                long duration = index.readLong();
+                index.readLong();
                 if (frameIndex >= total) throw new IllegalArgumentException("Frame index is outside the video.");
                 long pts = readPts(index, frameIndex);
-                return extractOne(uri, sha256(uriText), frameIndex, pts, targetWidth, quality);
+                return extractOne(uri, indexId, frameIndex, pts, targetWidth, quality);
             }
         });
     }
@@ -463,19 +474,20 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void extractFrameRange(PluginCall call) {
         String uriText = call.getString("uri");
+        String indexId = call.getString("indexId");
         int start = call.getInt("startFrameIndex", -1);
         int end = call.getInt("endFrameIndex", -1);
         int targetWidth = call.getInt("targetWidth", 0);
         int quality = clamp(call.getInt("quality", 95), 1, 100);
-        if (uriText == null || start < 0 || end < start || targetWidth < 0 || end - start + 1 > MAX_RANGE_SIZE) {
-            call.reject("Provide a valid frame range of at most " + MAX_RANGE_SIZE + " frames.");
+        if (uriText == null || !StorageKey.isValid(indexId) || start < 0 || end < start || targetWidth < 0 || end - start + 1 > MAX_RANGE_SIZE) {
+            call.reject("Provide a valid indexId and frame range of at most " + MAX_RANGE_SIZE + " frames.");
             return;
         }
-        execute(call, () -> extractRange(Uri.parse(uriText), start, end, targetWidth, quality));
+        execute(call, () -> extractRange(Uri.parse(uriText), indexId, start, end, targetWidth, quality));
     }
 
-    private JSObject extractRange(Uri uri, int start, int end, int targetWidth, int quality) throws Exception {
-        String indexId = sha256(uri.toString());
+    private JSObject extractRange(Uri uri, String indexId, int start, int end, int targetWidth, int quality) throws Exception {
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         JSArray frames = new JSArray();
@@ -539,10 +551,11 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void extractFrameSelection(PluginCall call) {
         String uriText = call.getString("uri");
+        String indexId = call.getString("indexId");
         JSArray requested = call.getArray("frameIndexes");
         int targetWidth = call.getInt("targetWidth", 0);
         int quality = clamp(call.getInt("quality", 95), 1, 100);
-        if (uriText == null || requested == null || requested.length() < 1
+        if (uriText == null || !StorageKey.isValid(indexId) || requested == null || requested.length() < 1
             || requested.length() > MAX_RANGE_SIZE || targetWidth < 0) {
             call.reject("Provide a video URI and 1–" + MAX_RANGE_SIZE + " selected frame indexes.");
             return;
@@ -560,11 +573,11 @@ public class FrameExtractorPlugin extends Plugin {
             call.reject("Selected frame indexes must be integers.");
             return;
         }
-        execute(call, () -> extractSelection(Uri.parse(uriText), indexes, targetWidth, quality));
+        execute(call, () -> extractSelection(Uri.parse(uriText), indexId, indexes, targetWidth, quality));
     }
 
-    private JSObject extractSelection(Uri uri, int[] indexes, int targetWidth, int quality) throws Exception {
-        String indexId = sha256(uri.toString());
+    private JSObject extractSelection(Uri uri, String indexId, int[] indexes, int targetWidth, int quality) throws Exception {
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         JSArray frames = new JSArray();
@@ -625,18 +638,19 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void generateThumbnails(PluginCall call) {
         String uriText = call.getString("uri");
+        String indexId = call.getString("indexId");
         int requestedCount = call.getInt("count", 100);
         int width = call.getInt("width", DEFAULT_THUMB_WIDTH);
         int quality = clamp(call.getInt("quality", 80), 1, 100);
-        if (uriText == null || requestedCount < 1 || requestedCount > 500 || width < 24) {
-            call.reject("uri, count (1-500) and width (at least 24px) are required.");
+        if (uriText == null || !StorageKey.isValid(indexId) || requestedCount < 1 || requestedCount > 500 || width < 24) {
+            call.reject("uri, valid indexId, count (1-500) and width (at least 24px) are required.");
             return;
         }
-        execute(call, () -> generateThumbnails(Uri.parse(uriText), requestedCount, width, quality));
+        execute(call, () -> generateThumbnails(Uri.parse(uriText), indexId, requestedCount, width, quality));
     }
 
-    private JSObject generateThumbnails(Uri uri, int requestedCount, int targetWidth, int quality) throws Exception {
-        String indexId = sha256(uri.toString());
+    private JSObject generateThumbnails(Uri uri, String indexId, int requestedCount, int targetWidth, int quality) throws Exception {
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         JSArray thumbnails = new JSArray();
@@ -692,24 +706,25 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void detectWatermark(PluginCall call) {
         String uri = call.getString("uri");
+        String indexId = call.getString("indexId");
         int frameIndex = call.getInt("frameIndex", -1);
         JSArray methodsArray = call.getArray("detectionMethods");
-        if (uri == null || uri.trim().isEmpty() || frameIndex < 0) {
-            call.reject("uri and a non-negative frameIndex are required.");
+        if (uri == null || uri.trim().isEmpty() || !StorageKey.isValid(indexId) || frameIndex < 0) {
+            call.reject("uri, valid indexId and a non-negative frameIndex are required.");
             return;
         }
         try {
             String[] methods = new String[methodsArray == null ? 0 : methodsArray.length()];
             for (int i = 0; i < methods.length; i++) methods[i] = methodsArray.getString(i);
-            execute(call, () -> detectWatermark(uri, frameIndex, methods));
+            execute(call, () -> detectWatermark(uri, indexId, frameIndex, methods));
         } catch (Exception error) {
             call.reject("Could not read detection methods.", error);
         }
     }
 
-    private JSObject detectWatermark(String uriText, int frameIndex, String[] detectionMethods) throws Exception {
+    private JSObject detectWatermark(String uriText, String indexId, int frameIndex, String[] detectionMethods) throws Exception {
         Uri uri = Uri.parse(uriText);
-        String indexId = sha256(uriText);
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         Bitmap bitmap;
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
@@ -750,7 +765,7 @@ public class FrameExtractorPlugin extends Plugin {
                     double score = measureOverlayContrast(bitmap, bounds);
                     if (score < 0.38) continue;
                     JSObject detection = new JSObject();
-                    detection.put("id", sha256(uriText + ":" + frameIndex + ":" + i).substring(0, 24));
+                    detection.put("id", sha256(indexId + ":" + frameIndex + ":" + i).substring(0, 24));
                     detection.put("type", "unknown");
                     detection.put("detectionMethod", "static-region");
                     JSObject rect = new JSObject();
@@ -811,47 +826,49 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void removeWatermark(PluginCall call) {
         String uri = call.getString("uri");
+        String indexId = call.getString("indexId");
         String watermarkId = call.getString("watermarkId");
         JSObject bounds = call.getObject("bounds");
         int start = call.getInt("startFrameIndex", -1);
         int end = call.getInt("endFrameIndex", -1);
         JSObject settings = call.getObject("settings");
-        if (uri == null || watermarkId == null || bounds == null || settings == null || start < 0 || end < start) {
+        if (uri == null || !StorageKey.isValid(indexId) || watermarkId == null || bounds == null || settings == null || start < 0 || end < start) {
             call.reject("uri, watermarkId, bounds, settings and a valid frame range are required.");
             return;
         }
         String operationId = "watermark-" + watermarkId + "-" + System.currentTimeMillis();
         executeRemoval(call, operationId, () -> {
-            JSObject result = removeWatermark(uri, operationId, bounds, start, end, settings);
+            JSObject result = removeWatermark(uri, indexId, operationId, bounds, start, end, settings);
             result.put("watermarkId", watermarkId);
             return result;
         });
     }
 
-    private JSObject removeWatermark(String uri, String operationId, JSObject bounds,
+    private JSObject removeWatermark(String uri, String indexId, String operationId, JSObject bounds,
                                      int startFrameIndex, int endFrameIndex, JSObject settings) throws Exception {
-        return removeVideoRegion(uri, operationId, bounds, startFrameIndex, endFrameIndex, settings, "watermark", null);
+        return removeVideoRegion(uri, indexId, operationId, bounds, startFrameIndex, endFrameIndex, settings, "watermark", null);
     }
 
     @PluginMethod
     public void removeText(PluginCall call) {
         String uri = call.getString("uri");
+        String indexId = call.getString("indexId");
         JSObject bounds = call.getObject("bounds");
         int start = call.getInt("startFrameIndex", -1);
         int end = call.getInt("endFrameIndex", -1);
         JSObject settings = call.getObject("settings");
         String detectionMethod = call.getString("detectionMethod", "manual");
-        if (uri == null || bounds == null || settings == null || start < 0 || end < start) {
+        if (uri == null || !StorageKey.isValid(indexId) || bounds == null || settings == null || start < 0 || end < start) {
             call.reject("uri, bounds, settings and a valid frame range are required.");
             return;
         }
         String operationId = "text-" + System.currentTimeMillis();
-        executeRemoval(call, operationId, () -> removeText(uri, bounds, start, end, settings, detectionMethod, operationId));
+        executeRemoval(call, operationId, () -> removeText(uri, indexId, bounds, start, end, settings, detectionMethod, operationId));
     }
 
-    private JSObject removeText(String uri, JSObject bounds, int startFrameIndex, int endFrameIndex,
+    private JSObject removeText(String uri, String indexId, JSObject bounds, int startFrameIndex, int endFrameIndex,
                                 JSObject settings, String detectionMethod, String operationId) throws Exception {
-        JSObject result = removeVideoRegion(uri, operationId, bounds, startFrameIndex, endFrameIndex, settings, "text", detectionMethod);
+        JSObject result = removeVideoRegion(uri, indexId, operationId, bounds, startFrameIndex, endFrameIndex, settings, "text", detectionMethod);
         result.put("detectionMethod", detectionMethod);
         return result;
     }
@@ -859,23 +876,25 @@ public class FrameExtractorPlugin extends Plugin {
     @PluginMethod
     public void previewRemoval(PluginCall call) {
         String uri = call.getString("uri");
+        String indexId = call.getString("indexId");
         String framePath = call.getString("framePath");
         JSObject bounds = call.getObject("bounds");
         String algorithm = call.getString("algorithm", "naive-diffusion");
         String donorFramePath = call.getString("donorFramePath");
         int feather = clamp(call.getInt("featherPx", 8), 0, 512);
         int expansion = clamp(call.getInt("expansionPx", 4), 0, 512);
-        if (uri == null || uri.trim().isEmpty() || framePath == null || bounds == null) {
-            call.reject("uri, framePath and bounds are required.");
+        if (uri == null || uri.trim().isEmpty() || !StorageKey.isValid(indexId) || framePath == null || bounds == null) {
+            call.reject("uri, valid indexId, framePath and bounds are required.");
             return;
         }
         String operationId = "preview-" + System.currentTimeMillis();
-        executeRemoval(call, operationId, () -> previewRemoval(uri, framePath, bounds, algorithm, donorFramePath, feather, expansion, operationId));
+        executeRemoval(call, operationId, () -> previewRemoval(uri, indexId, framePath, bounds, algorithm, donorFramePath, feather, expansion, operationId));
     }
 
-    private JSObject previewRemoval(String uri, String framePath, JSObject bounds, String algorithm,
+    private JSObject previewRemoval(String uri, String indexId, String framePath, JSObject bounds, String algorithm,
                                     String donorFramePath, int featherPx, int expansionPx,
                                     String operationId) throws Exception {
+        StorageKey.requireValid(indexId);
         validateRemovalAlgorithm(algorithm);
         Bitmap decoded = BitmapFactory.decodeFile(framePath);
         if (decoded == null) throw new IllegalArgumentException("Could not decode the selected frame path.");
@@ -887,7 +906,6 @@ public class FrameExtractorPlugin extends Plugin {
         }
         try {
             applyNaiveRemoval(target, bounds, algorithm, donor, null, null, featherPx, expansionPx);
-            String indexId = sha256(uri);
             File output = RepairStoragePaths.previewFile(
                 getContext().getFilesDir(), indexId, sha256(operationId).substring(0, 16)
             );
@@ -911,11 +929,11 @@ public class FrameExtractorPlugin extends Plugin {
         }
     }
 
-    private JSObject removeVideoRegion(String uriText, String operationId, JSObject bounds,
+    private JSObject removeVideoRegion(String uriText, String indexId, String operationId, JSObject bounds,
                                        int startFrameIndex, int endFrameIndex, JSObject settings,
                                        String removalType, String detectionMethod) throws Exception {
         Uri uri = Uri.parse(uriText);
-        String indexId = sha256(uriText);
+        StorageKey.requireValid(indexId);
         File indexFile = getIndexFile(indexId);
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         int total = endFrameIndex - startFrameIndex + 1;
@@ -1097,45 +1115,111 @@ public class FrameExtractorPlugin extends Plugin {
 
     @PluginMethod
     public void deleteVideoData(PluginCall call) {
+        String indexId = call.getString("indexId");
         String uriText = call.getString("uri");
-        if (uriText == null || uriText.trim().isEmpty()) {
-            call.reject("uri is required.");
+        boolean releaseUriPermission = call.getBoolean("releaseUriPermission", false);
+        if (!StorageKey.isValid(indexId) || (releaseUriPermission && (uriText == null || uriText.trim().isEmpty()))) {
+            call.reject("A valid indexId is required; uri is required when releaseUriPermission is true.");
             return;
         }
         execute(call, () -> {
-            String indexId = sha256(uriText);
-            File root = new File(getContext().getFilesDir(), "frame_fusion");
-            deleteOwnedPath(new File(root, "indexes/" + indexId + ".pts"));
-            deleteOwnedPath(new File(root, "frames/" + indexId));
-            deleteOwnedPath(new File(root, "thumbnails/" + indexId));
-            deleteOwnedPath(RepairStoragePaths.repairDirectory(getContext().getFilesDir(), indexId));
-            try {
-                getContext().getContentResolver().releasePersistableUriPermission(
-                    Uri.parse(uriText), Intent.FLAG_GRANT_READ_URI_PERMISSION
-                );
-            } catch (SecurityException | IllegalArgumentException ignored) {
-                // The provider may not have granted a persistable permission.
+            deleteStorageKey(indexId);
+            boolean permissionReleased = false;
+            if (releaseUriPermission) {
+                try {
+                    getContext().getContentResolver().releasePersistableUriPermission(
+                        Uri.parse(uriText), Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
+                    permissionReleased = true;
+                } catch (SecurityException | IllegalArgumentException ignored) {
+                    // Providers can deny release when no persisted grant exists.
+                }
             }
             JSObject value = new JSObject();
             value.put("deleted", true);
             value.put("indexId", indexId);
+            value.put("uri", uriText == null ? "" : uriText);
+            value.put("uriPermissionReleased", permissionReleased);
             return value;
         });
     }
 
-    private void deleteOwnedPath(File path) throws Exception {
-        if (!path.exists()) return;
-        if (path.isDirectory()) {
-            File[] children = path.listFiles();
-            if (children != null) {
-                for (File child : children) deleteOwnedPath(child);
+    private void deleteStorageKey(String indexId) throws Exception {
+        StorageKey.deleteStorageKey(getContext().getFilesDir(), indexId);
+    }
+
+    @PluginMethod
+    public void listNativeMedia(PluginCall call) {
+        execute(call, this::listNativeMedia);
+    }
+
+    private JSObject listNativeMedia() throws Exception {
+        java.util.Set<String> ids = new java.util.TreeSet<>();
+        File root = new File(getContext().getFilesDir(), "frame_fusion");
+        collectStorageIds(new File(root, "indexes"), ids, true);
+        collectStorageIds(new File(root, "frames"), ids, false);
+        collectStorageIds(new File(root, "thumbnails"), ids, false);
+        collectStorageIds(new File(root, "repairs"), ids, false);
+        JSArray values = new JSArray();
+        for (String id : ids) values.put(id);
+        JSObject result = new JSObject();
+        result.put("indexIds", values);
+        result.put("count", ids.size());
+        return result;
+    }
+
+    private void collectStorageIds(File directory, java.util.Set<String> ids, boolean indexFiles) {
+        File[] entries = directory.listFiles();
+        if (entries == null) return;
+        for (File entry : entries) {
+            String name = entry.getName();
+            String id = indexFiles && name.endsWith(".pts") ? name.substring(0, name.length() - 4) : name;
+            if ((!indexFiles && entry.isDirectory()) || (indexFiles && name.endsWith(".pts"))) {
+                if (StorageKey.isValid(id)) ids.add(id);
             }
         }
-        if (!path.delete()) throw new IllegalStateException("Could not remove app-owned frame data: " + path.getName());
+    }
+
+    @PluginMethod
+    public void deleteNativeMedia(PluginCall call) {
+        JSArray requested = call.getArray("indexIds");
+        if (requested == null || requested.length() > 500) {
+            call.reject("Provide no more than 500 native indexIds to remove.");
+            return;
+        }
+        final java.util.List<String> ids = new ArrayList<>();
+        try {
+            for (int i = 0; i < requested.length(); i++) {
+                String id = requested.getString(i);
+                if (!StorageKey.isValid(id)) {
+                    call.reject("Every native indexId must be a valid storage key.");
+                    return;
+                }
+                if (!ids.contains(id)) ids.add(id);
+            }
+        } catch (org.json.JSONException error) {
+            call.reject("Native indexIds must be strings.", error);
+            return;
+        }
+        execute(call, () -> {
+            JSArray deleted = new JSArray();
+            for (String id : ids) {
+                deleteStorageKey(id);
+                deleted.put(id);
+            }
+            JSObject result = new JSObject();
+            result.put("deletedIndexIds", deleted);
+            result.put("deletedCount", deleted.length());
+            return result;
+        });
+    }
+
+    static File resolveIndexPath(File filesDir, String storageKey) {
+        return StorageKey.resolveIndexPath(filesDir, storageKey);
     }
 
     private File getIndexFile(String indexId) throws Exception {
-        File file = new File(new File(getContext().getFilesDir(), "frame_fusion/indexes"), indexId + ".pts");
+        File file = resolveIndexPath(getContext().getFilesDir(), indexId);
         if (!file.isFile()) throw new IllegalStateException("The timestamp index is missing. Re-index the source video.");
         return file;
     }
@@ -1145,7 +1229,7 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     private File getOutputDir(String folder, String indexId) throws Exception {
-        File dir = new File(new File(getContext().getFilesDir(), "frame_fusion/" + folder), indexId);
+        File dir = StorageKey.resolveOutputDir(getContext().getFilesDir(), folder, indexId);
         if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Could not create frame output directory.");
         return dir;
     }

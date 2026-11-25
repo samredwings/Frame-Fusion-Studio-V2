@@ -11,6 +11,7 @@ import {
 import { extractVideoFrames } from "@/lib/studio/media";
 import { FrameExtractor, type FrameTimestamp } from "@/lib/native/frame-extractor";
 import { selectFramesForCapture, type NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
+import { findOrphanedNativeMedia, shouldDeleteNativeMedia, shouldReleaseUriPermission } from "@/lib/studio/native-ownership";
 import { DEMO_PROJECT_ID, seedDemo } from "@/lib/studio/sample";
 import type {
   DetectedWatermark,
@@ -43,6 +44,9 @@ type StudioState = {
   regions: Region[];
   exports: ExportItem[];
   videoSources: VideoSource[];
+  orphanedNativeMediaIds: string[];
+  refreshOrphanedNativeMedia: () => Promise<number>;
+  cleanupOrphanedNativeMedia: () => Promise<number>;
   frameAssets: FrameAsset[];
   repairManifests: RepairManifest[];
   renderJobs: RenderJob[];
@@ -171,6 +175,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   regions: [],
   exports: [],
   videoSources: [],
+  orphanedNativeMediaIds: [],
   frameAssets: [],
   repairManifests: [],
   renderJobs: [],
@@ -178,6 +183,25 @@ export const useStudio = create<StudioState>((set, get) => ({
   watermarkRemovals: [],
   textRemovals: [],
   dismiss: () => set({ notice: null, error: null }),
+  refreshOrphanedNativeMedia: async () => {
+    const inventory = await FrameExtractor.listNativeMedia();
+    const orphanedNativeMediaIds = findOrphanedNativeMedia(inventory.indexIds, get().videoSources);
+    set({ orphanedNativeMediaIds });
+    return orphanedNativeMediaIds.length;
+  },
+  cleanupOrphanedNativeMedia: async () => {
+    const inventory = await FrameExtractor.listNativeMedia();
+    const orphanedNativeMediaIds = findOrphanedNativeMedia(inventory.indexIds, get().videoSources);
+    if (!orphanedNativeMediaIds.length) {
+      set({ orphanedNativeMediaIds: [] });
+      return 0;
+    }
+    const result = await FrameExtractor.deleteNativeMedia(orphanedNativeMediaIds);
+    const remaining = await FrameExtractor.listNativeMedia();
+    const stillOrphaned = findOrphanedNativeMedia(remaining.indexIds, get().videoSources);
+    set({ orphanedNativeMediaIds: stillOrphaned });
+    return result.deletedCount;
+  },
   boot: () => {
     if (booting) return booting;
     booting = (async () => {
@@ -270,8 +294,16 @@ export const useStudio = create<StudioState>((set, get) => ({
         ? [{ kind: "delete" as const, store: "repairManifests", key: v2Manifest.projectId }]
         : []),
     ]);
+    const remainingVideoSources = get().videoSources.filter((item) => item.projectId !== id);
     await Promise.all(
-      v2VideoSources.map((item) => FrameExtractor.deleteVideoData(item.uri).catch(() => undefined)),
+      v2VideoSources.filter((item) => shouldDeleteNativeMedia(
+        remainingVideoSources,
+        item.frameIndexId || item.id,
+      )).map((item) => FrameExtractor.deleteVideoData({
+        indexId: item.frameIndexId || item.id,
+        uri: item.uri,
+        releaseUriPermission: shouldReleaseUriPermission(remainingVideoSources, item.uri),
+      }).catch(() => undefined)),
     );
     await idbDel("projects", id);
     set({
@@ -389,25 +421,19 @@ export const useStudio = create<StudioState>((set, get) => ({
   importNativeVideo: async (projectId, plan) => {
     if (!get().projects.some((item) => item.id === projectId))
       throw new Error("The selected project is no longer available.");
-    if (plan.index.frameCount < 1 || plan.index.indexId.length === 0)
-      throw new Error("The selected video has no verified timestamp index.");
-    const sourceId = crypto.randomUUID();
+    if (plan.index.frameCount < 1 || plan.index.indexId.length === 0
+      || plan.sourceId.length < 8 || plan.index.indexId !== plan.sourceId) {
+      throw new Error("The selected video has no valid source-owned timestamp index.");
+    }
+    const sourceId = plan.sourceId;
     const savedAssetIds: string[] = [];
     const selectedUri = plan.picked.uri;
     set({ busy: "Reading exact frame timestamps…", error: null, notice: null });
     try {
-      const timestampEntries: FrameTimestamp[] = [];
-      const pageSize = 5_000;
-      const pageCount = Math.ceil(plan.index.frameCount / pageSize);
-      for (let start = 0; start < plan.index.frameCount; start += pageSize) {
-        const limit = Math.min(pageSize, plan.index.frameCount - start);
-        const page = await FrameExtractor.getFrameTimestampPage(selectedUri, start, limit);
-        if (page.startFrameIndex !== start || page.entries.length !== limit
-          || page.totalFrameCount !== plan.index.frameCount) {
-          throw new Error(`The native timestamp index returned an incomplete page at frame ${start}.`);
-        }
-        timestampEntries.push(...page.entries);
-        set({ busy: `Reading exact frame timestamps… ${Math.min(pageCount, Math.floor(start / pageSize) + 1)} of ${pageCount}` });
+      const timestampEntries: FrameTimestamp[] = plan.timestamps;
+      if (timestampEntries.length !== plan.index.frameCount
+        || timestampEntries.some((entry, index) => entry.frameIndex !== index)) {
+        throw new Error("The pending native timestamp pages are incomplete or out of order.");
       }
 
       const selectedFrames = selectFramesForCapture(
@@ -432,6 +458,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         set({ busy: `Extracting selected frames… ${Math.min(start + batch.length, selectedFrames.length)} of ${selectedFrames.length}` });
         const extracted = await FrameExtractor.extractFrameSelection(
           selectedUri,
+          plan.index.indexId,
           batch.map((item) => item.frameIndex),
           0,
           95,
@@ -496,7 +523,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         nominalFrameRate: index.nominalFrameRate || fps,
         averageFrameRate: index.averageFrameRate || fps,
         hasVariableFrameRate: index.hasVariableFrameRate,
-        frameIndexId: index.indexId,
+        frameIndexId: sourceId,
         frameIndexVerified: index.indexVerified,
         captureMethod: plan.method,
         captureIntervalMs: plan.method === "interval" ? plan.intervalMs : undefined,
@@ -555,7 +582,11 @@ export const useStudio = create<StudioState>((set, get) => ({
         store: "frameAssets",
         key: assetId,
       }))).catch(() => undefined);
-      await FrameExtractor.deleteVideoData(selectedUri).catch(() => undefined);
+      await FrameExtractor.deleteVideoData({
+        indexId: sourceId,
+        uri: selectedUri,
+        releaseUriPermission: shouldReleaseUriPermission(get().videoSources, selectedUri, sourceId),
+      }).catch(() => undefined);
       set({
         frameAssets: get().frameAssets.filter((asset) => !savedAssetIds.includes(asset.id)),
         busy: null,
@@ -840,9 +871,16 @@ export const useStudio = create<StudioState>((set, get) => ({
         ? [{ kind: "delete" as const, store: "repairManifests", key: manifest.projectId }]
         : []),
     ]);
-    await FrameExtractor.deleteVideoData(source.uri).catch(() => undefined);
+    const remainingVideoSources = get().videoSources.filter((item) => item.id !== id);
+    if (shouldDeleteNativeMedia(remainingVideoSources, source.frameIndexId || source.id)) {
+      await FrameExtractor.deleteVideoData({
+        indexId: source.frameIndexId || source.id,
+        uri: source.uri,
+        releaseUriPermission: shouldReleaseUriPermission(remainingVideoSources, source.uri),
+      }).catch(() => undefined);
+    }
     set({
-      videoSources: get().videoSources.filter((item) => item.id !== id),
+      videoSources: remainingVideoSources,
       frameAssets: get().frameAssets.filter((item) => item.sourceVideoId !== id),
       repairManifests: get().repairManifests.filter((item) => item.sourceVideoId !== id),
       renderJobs: get().renderJobs.filter((item) => item.sourceVideoId !== id),
