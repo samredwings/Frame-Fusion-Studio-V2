@@ -42,6 +42,8 @@ export interface VideoInfo {
   audioBitrate?: number;
 }
 
+export type FrameMappingConfidence = "unverified";
+
 export interface FrameIndexResult {
   uri: string;
   indexId: string;
@@ -50,10 +52,14 @@ export interface FrameIndexResult {
   nominalFrameRate: number;
   averageFrameRate: number;
   hasVariableFrameRate: boolean;
-  indexVerified: boolean;
+  /** Structural checks only; does not prove source-picture correspondence. */
+  indexStructurallyValid: boolean;
+  frameMappingConfidence: FrameMappingConfidence;
   metadataFrameCount: number;
-  ptsMonotonic: boolean;
+  /** Whether MediaExtractor's source/decode sample order was non-decreasing by PTS. */
+  ptsSourceOrdered: boolean;
   ptsDuplicates: number;
+  ptsNegative: number;
   firstPtsUs: number;
   lastPtsUs: number;
   maxGapUs: number;
@@ -80,7 +86,8 @@ export interface ExtractedFrame {
   width: number;
   height: number;
   fileSize: number;
-  exactFrameIndex: boolean;
+  /** True only when Android API 28+ used getFrameAtIndex; not picture-match verification. */
+  usedFrameIndexApi: boolean;
 }
 
 export interface ExtractFrameRangeResult {

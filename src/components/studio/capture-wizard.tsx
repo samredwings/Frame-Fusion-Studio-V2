@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Clock3, Hand, Plus, Scissors, Trash2, X } from "lucide-react";
-import { estimateCaptureFrameCount, type NativeVideoCapturePlan, type CaptureMethod, type CaptureRange, type FrameTimestampLike } from "@/lib/studio/extraction-plan";
+import { getCaptureFrameEstimate, type NativeVideoCapturePlan, type CaptureMethod, type CaptureRange, type FrameTimestampLike } from "@/lib/studio/extraction-plan";
 import type { PickedVideo, VideoInfo, FrameIndexResult } from "@/lib/native/frame-extractor";
 import { Button } from "@/components/studio/ui";
 
@@ -38,10 +38,11 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
   const playerRef = useRef<HTMLVideoElement>(null);
   const isExtracting = Boolean(busy?.startsWith("Reading exact frame timestamps") || busy?.startsWith("Extracting selected frames"));
 
-  const estimatedFrames = useMemo(
-    () => estimateCaptureFrameCount(video.timestamps, ranges, method, intervalMs),
+  const estimate = useMemo(
+    () => getCaptureFrameEstimate(video.timestamps, ranges, method, intervalMs),
     [video.timestamps, ranges, method, intervalMs],
   );
+  const estimatedFrames = estimate.count;
 
   function addRange() {
     if (ranges.length >= 25) return;
@@ -75,7 +76,7 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
   }
 
   function beginExtraction() {
-    if (!ranges.length || isExtracting) return;
+    if (!ranges.length || estimate.error || estimatedFrames < 1 || isExtracting) return;
     onExtract({
       sourceId: video.sourceId,
       timestamps: video.timestamps,
@@ -100,6 +101,12 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
           <X className="size-5" />
         </button>
       </div>
+
+      {video.index.warning ? (
+        <p role="status" className="rounded-xl border border-line bg-surface-2 px-3 py-2 text-xs leading-5 text-muted">
+          {video.index.warning}
+        </p>
+      ) : null}
 
       <div className="capture-player-wrap flex shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-line bg-black">
         <video
@@ -174,12 +181,13 @@ export function CaptureWizard({ video, busy, onCancel, onExtract }: Props) {
           <span className="text-xs text-muted">Estimated frames</span>
           <strong className="font-mono text-sm">{estimatedFrames.toLocaleString()}</strong>
         </div>
+        {estimate.error ? <p role="alert" className="mt-2 text-xs leading-5 text-danger">{estimate.error}</p> : null}
       </div>
 
       {busy ? <p role="status" className="rounded-xl bg-cyan-dim px-3 py-2 text-xs text-cyan">{busy}</p> : null}
       <div className="flex shrink-0 gap-2">
         <Button tone="quiet" className="flex-1" disabled={isExtracting} onClick={onCancel}>Cancel</Button>
-        <Button className="flex-[2]" disabled={!ranges.length || isExtracting} onClick={beginExtraction}><Scissors className="size-4" />{isExtracting ? "Extracting…" : `Extract ${estimatedFrames.toLocaleString()} frames`}</Button>
+        <Button className="flex-[2]" disabled={!ranges.length || Boolean(estimate.error) || estimatedFrames < 1 || isExtracting} onClick={beginExtraction}><Scissors className="size-4" />{isExtracting ? "Extracting…" : `Extract ${estimatedFrames.toLocaleString()} frames`}</Button>
       </div>
     </section>
   );

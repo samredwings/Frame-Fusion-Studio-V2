@@ -270,8 +270,8 @@ public class FrameExtractorPlugin extends Plugin {
             extractor.selectTrack(videoTrack);
             while (true) {
                 int sampleTrack = extractor.getSampleTrackIndex();
+                if (sampleTrack < 0) break;
                 long pts = extractor.getSampleTime();
-                if (sampleTrack < 0 || pts < 0) break;
                 if (sampleTrack == videoTrack) timestamps.add(pts);
                 if (!extractor.advance()) break;
             }
@@ -321,7 +321,7 @@ public class FrameExtractorPlugin extends Plugin {
             if (spanUs > 0) averageFps = (float) ((frameCount - 1) * 1_000_000.0 / spanUs);
         }
         boolean isVfr = detectVariableFrameRate(timestamps);
-        boolean verified = diagnostics.indexVerified;
+        boolean structurallyValid = diagnostics.indexStructurallyValid;
 
         JSObject value = new JSObject();
         value.put("uri", uri.toString());
@@ -331,18 +331,41 @@ public class FrameExtractorPlugin extends Plugin {
         value.put("nominalFrameRate", nominalFps);
         value.put("averageFrameRate", averageFps);
         value.put("hasVariableFrameRate", isVfr);
-        value.put("indexVerified", verified);
+        value.put("indexStructurallyValid", structurallyValid);
+        value.put("frameMappingConfidence", "unverified");
         value.put("metadataFrameCount", metadataFrameCount);
-        value.put("ptsMonotonic", diagnostics.ptsMonotonic);
+        value.put("ptsSourceOrdered", diagnostics.ptsSourceOrdered);
         value.put("ptsDuplicates", diagnostics.ptsDuplicates);
+        value.put("ptsNegative", diagnostics.ptsNegative);
         value.put("firstPtsUs", diagnostics.firstPtsUs);
         value.put("lastPtsUs", diagnostics.lastPtsUs);
         value.put("maxGapUs", diagnostics.maxGapUs);
-        String warning = isVfr
-            ? "Variable frame rate detected; source PTS retained (first=" + diagnostics.firstPtsUs
-                + "us, last=" + diagnostics.lastPtsUs + "us, max gap=" + diagnostics.maxGapUs
-                + "us). Frame-index identity is not independently guaranteed."
-            : (verified ? "" : "Timestamp count or ordering did not pass independent verification; exact frame identity remains unverified.");
+        String structuralWarning;
+        if (structurallyValid) {
+            structuralWarning = "The sorted presentation-timestamp index is structurally valid: "
+                + "metadata count matches, all PTS are non-negative, and timestamps are unique.";
+        } else {
+            String countEvidence = metadataFrameCount <= 0
+                ? "metadata frame count is unavailable"
+                : "metadata frame count " + metadataFrameCount + " does not match indexed count " + frameCount;
+            List<String> failures = new ArrayList<>();
+            failures.add(countEvidence);
+            if (diagnostics.ptsNegative > 0) failures.add(diagnostics.ptsNegative + " negative PTS value(s)");
+            if (diagnostics.ptsDuplicates > 0) failures.add(diagnostics.ptsDuplicates + " duplicate PTS value(s)");
+            structuralWarning = "The sorted presentation-timestamp index is not structurally valid: "
+                + String.join(", ", failures) + ".";
+        }
+        String orderWarning = diagnostics.ptsSourceOrdered
+            ? "MediaExtractor sample order was presentation-ordered."
+            : "MediaExtractor sample order was reordered by presentation timestamps when building the index.";
+        String timingEvidence = "Timing evidence: " + frameCount + " PTS, first="
+            + diagnostics.firstPtsUs + "us, last=" + diagnostics.lastPtsUs
+            + "us, duplicates=" + diagnostics.ptsDuplicates + ", negative="
+            + diagnostics.ptsNegative + ", max gap=" + diagnostics.maxGapUs + "us."
+            + (isVfr ? " Variable frame rate detected." : "");
+        String warning = structuralWarning + " " + orderWarning + " " + timingEvidence
+            + " Frame-to-picture mapping confidence is unverified; these checks do not prove that "
+            + "MediaMetadataRetriever.getFrameAtIndex(n) returns the corresponding source picture.";
         value.put("warning", warning);
         return value;
     }
@@ -441,8 +464,8 @@ public class FrameExtractorPlugin extends Plugin {
         Bitmap bitmap = null;
         try {
             retriever.setDataSource(getContext(), uri);
-            boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-            bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
+            boolean usesFrameIndexApi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+            bitmap = usesFrameIndexApi ? retriever.getFrameAtIndex(frameIndex) :
                 retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
             if (bitmap == null) throw new IllegalStateException("Android could not decode frame " + frameIndex + ".");
 
@@ -463,7 +486,7 @@ public class FrameExtractorPlugin extends Plugin {
             value.put("width", bitmap.getWidth());
             value.put("height", bitmap.getHeight());
             value.put("fileSize", output.length());
-            value.put("exactFrameIndex", exact);
+            value.put("usedFrameIndexApi", usesFrameIndexApi);
             return value;
         } finally {
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
@@ -499,8 +522,8 @@ public class FrameExtractorPlugin extends Plugin {
             File outputDir = getOutputDir("frames", indexId);
             for (int frameIndex = start; frameIndex <= end; frameIndex++) {
                 long pts = readPts(index, frameIndex);
-                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
+                boolean usesFrameIndexApi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+                Bitmap bitmap = usesFrameIndexApi ? retriever.getFrameAtIndex(frameIndex) :
                     retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + ".");
                 try {
@@ -521,7 +544,7 @@ public class FrameExtractorPlugin extends Plugin {
                     frame.put("width", bitmap.getWidth());
                     frame.put("height", bitmap.getHeight());
                     frame.put("fileSize", output.length());
-                    frame.put("exactFrameIndex", exact);
+                    frame.put("usedFrameIndexApi", usesFrameIndexApi);
                     frames.put(frame);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();
@@ -591,8 +614,8 @@ public class FrameExtractorPlugin extends Plugin {
             for (int position = 0; position < indexes.length; position++) {
                 int frameIndex = indexes[position];
                 long pts = readPts(index, frameIndex);
-                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex)
+                boolean usesFrameIndexApi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+                Bitmap bitmap = usesFrameIndexApi ? retriever.getFrameAtIndex(frameIndex)
                     : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
                 if (bitmap == null) throw new IllegalStateException("Could not decode selected frame " + frameIndex + ".");
                 try {
@@ -613,7 +636,7 @@ public class FrameExtractorPlugin extends Plugin {
                     frame.put("width", bitmap.getWidth());
                     frame.put("height", bitmap.getHeight());
                     frame.put("fileSize", output.length());
-                    frame.put("exactFrameIndex", exact);
+                    frame.put("usedFrameIndexApi", usesFrameIndexApi);
                     frames.put(frame);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();
@@ -687,7 +710,7 @@ public class FrameExtractorPlugin extends Plugin {
                     thumb.put("width", bitmap.getWidth());
                     thumb.put("height", bitmap.getHeight());
                     thumb.put("fileSize", output.length());
-                    thumb.put("exactFrameIndex", Build.VERSION.SDK_INT >= Build.VERSION_CODES.P);
+                    thumb.put("usedFrameIndexApi", Build.VERSION.SDK_INT >= Build.VERSION_CODES.P);
                     thumbnails.put(thumb);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();

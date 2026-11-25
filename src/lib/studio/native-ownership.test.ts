@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findOrphanedNativeMedia, otherSourcesUsingIndexId, otherSourcesUsingUri, pendingCaptureDeleteOptions, shouldDeleteNativeMedia, shouldReleaseUriPermission } from "./native-ownership.ts";
+import { findOrphanedNativeMedia, isNativeStorageKey, otherSourcesUsingIndexId, otherSourcesUsingUri, pendingCaptureDeleteOptions, shouldDeleteNativeMedia, shouldReleaseUriPermission } from "./native-ownership.ts";
 import type { VideoSource } from "./types.ts";
 
 const source = (id: string, uri: string, projectId = `project-${id}`): VideoSource => ({
@@ -15,7 +15,8 @@ const source = (id: string, uri: string, projectId = `project-${id}`): VideoSour
   averageFrameRate: 10,
   hasVariableFrameRate: false,
   frameIndexId: id,
-  frameIndexVerified: true,
+  frameIndexStructurallyValid: true,
+  frameMappingConfidence: "unverified",
   width: 640,
   height: 360,
   rotation: 0,
@@ -87,4 +88,68 @@ test("legacy sources sharing a URI-derived indexId retain native files until the
   assert.equal(otherSourcesUsingIndexId([first, second], first.frameIndexId!, first.id).length, 1);
   assert.equal(shouldDeleteNativeMedia([first, second], first.frameIndexId!, first.id), false);
   assert.equal(shouldDeleteNativeMedia([second], first.frameIndexId!, second.id), true);
+});
+
+test("project deletion invokes the native bridge once per unreferenced index and releases a shared URI only once", async () => {
+  const { cleanupRemovedNativeMedia } = await import("./native-ownership.ts");
+  const removed = [
+    source("project-a-001", "content://provider/project"),
+    source("project-b-002", "content://provider/project"),
+  ];
+  const calls: Array<{ indexId: string; uri: string; releaseUriPermission: boolean }> = [];
+  await cleanupRemovedNativeMedia(removed, [], async (options) => { calls.push(options); });
+  assert.deepEqual(calls, [
+    { indexId: "project-a-001", uri: "content://provider/project", releaseUriPermission: true },
+    { indexId: "project-b-002", uri: "content://provider/project", releaseUriPermission: false },
+  ]);
+});
+
+test("source deletion removes only its index and keeps a duplicate-URI grant for the remaining source", async () => {
+  const { cleanupRemovedNativeMedia } = await import("./native-ownership.ts");
+  const removed = [source("removed-source-01", "content://provider/duplicate")];
+  const remaining = [source("saved-source-002", "content://provider/duplicate")];
+  const calls: Array<{ indexId: string; uri: string; releaseUriPermission: boolean }> = [];
+  await cleanupRemovedNativeMedia(removed, remaining, async (options) => { calls.push(options); });
+  assert.deepEqual(calls, [{
+    indexId: "removed-source-01",
+    uri: "content://provider/duplicate",
+    releaseUriPermission: false,
+  }]);
+});
+
+test("failed duplicate-URI import validation before extraction cleans its pending key exactly once", async () => {
+  const { withPendingNativeCaptureCleanup } = await import("./native-ownership.ts");
+  const existing = source("already-saved-001", "content://provider/duplicate-import");
+  const calls: Array<{ indexId: string; uri: string; releaseUriPermission: boolean }> = [];
+  await assert.rejects(() => withPendingNativeCaptureCleanup(
+    { sourceId: "pending-import-001", uri: "content://provider/duplicate-import" },
+    () => [existing],
+    async () => { throw new Error("The selected project is no longer available."); },
+    async (options) => { calls.push(options); },
+  ), /selected project is no longer available/);
+  assert.deepEqual(calls, [{
+    indexId: "pending-import-001",
+    uri: "content://provider/duplicate-import",
+    releaseUriPermission: false,
+  }]);
+});
+
+test("pending capture cleanup never deletes a key already owned by a saved source", async () => {
+  const { cleanupPendingNativeCapture } = await import("./native-ownership.ts");
+  const saved = source("saved-owner-0001", "content://provider/saved-owner");
+  const calls: Array<{ indexId: string; uri: string; releaseUriPermission: boolean }> = [];
+  await cleanupPendingNativeCapture(
+    [saved],
+    { sourceId: saved.frameIndexId, uri: saved.uri },
+    async (options) => { calls.push(options); },
+  );
+  assert.deepEqual(calls, []);
+});
+
+
+test("legacy 64-character SHA-256 URI keys remain valid and retain orphan references", () => {
+  const legacyIndexId = "a".repeat(64);
+  assert.equal(isNativeStorageKey(legacyIndexId), true);
+  const legacy = { ...source("legacy-video-source", "content://provider/legacy"), frameIndexId: legacyIndexId };
+  assert.deepEqual(findOrphanedNativeMedia([legacyIndexId], [legacy]), []);
 });

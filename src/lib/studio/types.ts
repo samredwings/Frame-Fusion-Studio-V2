@@ -179,6 +179,16 @@ export interface VideoMetadata {
   audioBitrate?: number;
 }
 
+export interface FrameIndexDiagnosticsSummary {
+  metadataFrameCount: number;
+  ptsSourceOrdered: boolean;
+  ptsDuplicates: number;
+  ptsNegative: number;
+  firstPtsUs: number;
+  lastPtsUs: number;
+  maxGapUs: number;
+}
+
 export interface VideoSource {
   id: string;
   projectId: string;
@@ -192,7 +202,12 @@ export interface VideoSource {
   averageFrameRate: number;
   hasVariableFrameRate: boolean;
   frameIndexId: string;
-  frameIndexVerified: boolean;
+  /** Optional for legacy persisted records created before structural diagnostics were named accurately. */
+  frameIndexStructurallyValid?: boolean;
+  /** Source/decode-order and sorted-PTS evidence retained with the imported source. */
+  frameIndexDiagnostics?: FrameIndexDiagnosticsSummary;
+  /** No source-picture mapping is independently verified by timestamp-index construction. */
+  frameMappingConfidence?: "unverified";
   captureMethod?: "manual" | "interval";
   captureIntervalMs?: number;
   captureRanges?: Array<{ id: string; startMs: number; endMs: number }>;
@@ -234,7 +249,8 @@ export interface FrameAsset {
   sequenceId?: string;
   isEdited: boolean;
   isReplacementCandidate: boolean;
-  exactFrameIndex?: boolean;
+  /** True means the Android frame-index API was selected, not that picture correspondence was verified. */
+  usedFrameIndexApi?: boolean;
   createdAt: number;
 }
 

@@ -26,7 +26,7 @@ import { FaceTool } from "@/components/studio/face-tool";
 import { FrameTool } from "@/components/studio/frame-tool";
 import { CaptureWizard } from "@/components/studio/capture-wizard";
 import type { NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
-import { pendingCaptureDeleteOptions } from "@/lib/studio/native-ownership";
+import { cleanupPendingNativeCapture } from "@/lib/studio/native-ownership";
 import { getAndroidContentPreviewUrl } from "@/lib/native/content-preview";
 import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
@@ -251,10 +251,11 @@ export function Workspace({
   async function cleanupPendingCapture(capture: NonNullable<typeof pendingCapture>) {
     if (cleanedCaptureIds.current.has(capture.sourceId)) return;
     cleanedCaptureIds.current.add(capture.sourceId);
-    await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
+    await cleanupPendingNativeCapture(
       useStudio.getState().videoSources,
       { sourceId: capture.sourceId, uri: capture.picked.uri },
-    )).catch(() => undefined);
+      (options) => FrameExtractor.deleteVideoData(options),
+    ).catch(() => false);
   }
 
   async function cancelPendingCapture() {
@@ -274,10 +275,11 @@ export function Workspace({
       const picked = await FrameExtractor.pickVideo();
       pickedForCleanup = picked;
       useStudio.setState({ busy: "Reading video metadata and building the timestamp index…" });
-      const [info, index] = await Promise.all([
-        FrameExtractor.getVideoInfo(picked.uri),
-        FrameExtractor.buildFrameIndex(picked.uri, sourceId),
-      ]);
+      // Await each native operation before cleanup can run. Promise.all could reject
+      // on metadata first while the index build continued writing its pending key.
+      const info = await FrameExtractor.getVideoInfo(picked.uri);
+      useStudio.setState({ busy: "Building the source-owned timestamp index…" });
+      const index = await FrameExtractor.buildFrameIndex(picked.uri, sourceId);
       if (!index.frameCount || index.indexId !== sourceId) {
         throw new Error("No frames could be indexed with the selected source storage key.");
       }
@@ -310,10 +312,11 @@ export function Workspace({
     } catch (error) {
       if (pickedForCleanup) {
         cleanedCaptureIds.current.add(sourceId);
-        await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
+        await cleanupPendingNativeCapture(
           useStudio.getState().videoSources,
           { sourceId, uri: pickedForCleanup.uri },
-        )).catch(() => undefined);
+          (options) => FrameExtractor.deleteVideoData(options),
+        ).catch(() => false);
       }
       useStudio.setState({
         busy: null,
