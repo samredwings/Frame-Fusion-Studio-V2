@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - Main
       - "android-release-v*"
       - "feature/**"
     tags:
       - "android-v*"
   pull_request:
     branches:
-      - main
+      - Main
 
 # Builds never need repository write access. The release job below receives it
 # only for versioned release refs.
@@ -102,7 +102,7 @@ jobs:
         env:
           ANDROID_VERSION_NAME: ${{ steps.release_meta.outputs.version || '1.0' }}
           ANDROID_VERSION_CODE: ${{ steps.release_meta.outputs.version_code || '1' }}
-        run: cd android && ./gradlew assembleDebug -PVERSION_NAME="$ANDROID_VERSION_NAME" -PVERSION_CODE="$ANDROID_VERSION_CODE"
+        run: cd android && ./gradlew testDebugUnitTest assembleDebug -PVERSION_NAME="$ANDROID_VERSION_NAME" -PVERSION_CODE="$ANDROID_VERSION_CODE"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
