@@ -719,6 +719,12 @@ export const useStudio = create<StudioState>((set, get) => ({
       return assets.length;
     } catch (error) {
       recordDiagnosticError("native-extraction.failed", error, { sourceId, selectionMode: selection.mode });
+      await FrameExtractor.deleteExtractedFrames(indexId).catch((cleanupError) => {
+        recordDiagnosticWarning("native-extraction.partial-frame-cleanup-failed", {
+          sourceId,
+          message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      });
       set({ busy: null, error: error instanceof Error ? error.message : "Native frame extraction failed." });
       throw error;
     } finally {
