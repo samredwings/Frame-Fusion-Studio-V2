@@ -12,6 +12,7 @@ import type {
   DetectionMethod,
   NormalizedRect,
   WatermarkRemovalSettings,
+  VideoTrackMetadata,
 } from "@/lib/studio/types";
 
 export interface PickedVideo {
@@ -40,7 +41,16 @@ export interface VideoInfo {
   audioChannels?: number;
   audioSampleRate?: number;
   audioBitrate?: number;
+  captureFrameRate?: number;
+  embeddedMetadata?: Record<string, string>;
+  tracks?: VideoTrackMetadata[];
+  audioTrackCount?: number;
+  trackCount?: number;
+  videoTrackIndex?: number;
+  metadataScope?: string;
 }
+
+export type FrameMappingConfidence = "unverified";
 
 export interface FrameIndexResult {
   uri: string;
@@ -50,10 +60,14 @@ export interface FrameIndexResult {
   nominalFrameRate: number;
   averageFrameRate: number;
   hasVariableFrameRate: boolean;
-  indexVerified: boolean;
+  /** Structural checks only; does not prove source-picture correspondence. */
+  indexStructurallyValid: boolean;
+  frameMappingConfidence: FrameMappingConfidence;
   metadataFrameCount: number;
-  ptsMonotonic: boolean;
+  /** Whether MediaExtractor's source/decode sample order was non-decreasing by PTS. */
+  ptsSourceOrdered: boolean;
   ptsDuplicates: number;
+  ptsNegative: number;
   firstPtsUs: number;
   lastPtsUs: number;
   maxGapUs: number;
@@ -80,7 +94,8 @@ export interface ExtractedFrame {
   width: number;
   height: number;
   fileSize: number;
-  exactFrameIndex: boolean;
+  /** True only when Android API 28+ used getFrameAtIndex; not picture-match verification. */
+  usedFrameIndexApi: boolean;
 }
 
 export interface ExtractFrameRangeResult {
@@ -241,6 +256,13 @@ export interface FrameExtractorPlugin {
     uri: string;
     uriPermissionReleased: boolean;
   }>;
+  getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }>;
+  saveToDownloads(options: { filename: string; mimeType: string; dataBase64: string }): Promise<{
+    filename: string;
+    uri: string;
+    bytes: number;
+    folder: string;
+  }>;
   listNativeMedia(): Promise<{ indexIds: string[]; count: number }>;
   deleteNativeMedia(options: { indexIds: string[] }): Promise<{ deletedIndexIds: string[]; deletedCount: number }>;
   addListener(
@@ -384,6 +406,14 @@ export const FrameExtractor = {
   deleteVideoData(options: { indexId: string; uri: string; releaseUriPermission?: boolean }) {
     assertAndroid();
     return NativeFrameExtractor.deleteVideoData(options);
+  },
+  getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }> {
+    assertAndroid();
+    return NativeFrameExtractor.getNativeDiagnostics();
+  },
+  saveToDownloads(filename: string, mimeType: string, dataBase64: string) {
+    assertAndroid();
+    return NativeFrameExtractor.saveToDownloads({ filename, mimeType, dataBase64 });
   },
   listNativeMedia() {
     assertAndroid();

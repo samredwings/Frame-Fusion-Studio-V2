@@ -89,3 +89,26 @@ test("capture estimate starts at zero before any range is saved", async () => {
   const { estimateCaptureFrameCount } = await import("./extraction-plan.ts");
   assert.equal(estimateCaptureFrameCount(timestamps, [], "manual", 200), 0);
 });
+
+test("capture estimate safely reports empty or temporarily incomplete timestamp state", async () => {
+  const { estimateCaptureFrameCount, getCaptureFrameEstimate } = await import("./extraction-plan.ts");
+  assert.equal(estimateCaptureFrameCount([], [range("pending", 0, 500)], "manual", 200), 0);
+  assert.deepEqual(getCaptureFrameEstimate([], [range("pending", 0, 500)], "manual", 200), {
+    count: 0,
+    error: "The source video has no indexed frame timestamps.",
+  });
+});
+
+test("capture estimate safely rejects an invalid interval without throwing", async () => {
+  const { estimateCaptureFrameCount, getCaptureFrameEstimate } = await import("./extraction-plan.ts");
+  assert.equal(estimateCaptureFrameCount(timestamps, [range("valid", 0, 500)], "interval", 0), 0);
+  assert.match(getCaptureFrameEstimate(timestamps, [range("valid", 0, 500)], "interval", 0).error ?? "", /interval must be between/);
+});
+
+test("capture estimate safely rejects invalid or non-finite range values without throwing", async () => {
+  const { estimateCaptureFrameCount, getCaptureFrameEstimate } = await import("./extraction-plan.ts");
+  for (const invalidRange of [range("backwards", 400, 200), range("nan", Number.NaN, 300)]) {
+    assert.equal(estimateCaptureFrameCount(timestamps, [invalidRange], "manual", 200), 0);
+    assert.match(getCaptureFrameEstimate(timestamps, [invalidRange], "manual", 200).error ?? "", /valid time range/);
+  }
+});

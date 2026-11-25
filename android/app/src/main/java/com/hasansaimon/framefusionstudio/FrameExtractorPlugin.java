@@ -2,6 +2,7 @@ package com.hasansaimon.framefusionstudio;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.ContentValues;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -10,7 +11,10 @@ import android.media.MediaFormat;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.util.Base64;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -30,6 +34,11 @@ import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.charset.StandardCharsets;
 import java.io.RandomAccessFile;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -64,6 +73,87 @@ public class FrameExtractorPlugin extends Plugin {
         JSObject run() throws Exception;
     }
 
+    private File getNativeDiagnosticsFile() throws Exception {
+        File directory = new File(getContext().getFilesDir(), "frame_fusion");
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IllegalStateException("Could not create the diagnostics directory.");
+        }
+        return new File(directory, "native-diagnostics.log");
+    }
+
+    private synchronized void appendNativeFailure(Exception error) {
+        try {
+            File file = getNativeDiagnosticsFile();
+            if (file.length() > 256 * 1024L && !file.delete()) {
+                Log.w(TAG, "Could not rotate the native diagnostics file.");
+            }
+            StringWriter stack = new StringWriter();
+            error.printStackTrace(new PrintWriter(stack));
+            String safeStack = redactPrivateUri(stack.toString());
+            try (PrintWriter writer = new PrintWriter(
+                new OutputStreamWriter(new FileOutputStream(file, true), StandardCharsets.UTF_8)
+            )) {
+                writer.println("[" + System.currentTimeMillis() + "] Native media operation failed");
+                writer.println(error.getClass().getName() + ": " + redactPrivateUri(error.getMessage() == null ? "" : error.getMessage()));
+                writer.println(safeStack);
+                writer.println();
+            }
+        } catch (Exception loggingError) {
+            Log.w(TAG, "Could not persist native diagnostics.", loggingError);
+        }
+    }
+
+    @PluginMethod
+    public void getNativeDiagnostics(PluginCall call) {
+        try {
+            File file = getNativeDiagnosticsFile();
+            String text = "";
+            if (file.isFile() && file.length() > 0) {
+                int length = (int) Math.min(file.length(), 256 * 1024L);
+                byte[] bytes = new byte[length];
+                int offset = 0;
+                try (FileInputStream input = new FileInputStream(file)) {
+                    while (offset < length) {
+                        int count = input.read(bytes, offset, length - offset);
+                        if (count < 0) break;
+                        offset += count;
+                    }
+                }
+                text = new String(bytes, 0, offset, StandardCharsets.UTF_8);
+            }
+            JSObject value = new JSObject();
+            value.put("text", text);
+            value.put("sizeBytes", file.isFile() ? file.length() : 0);
+            call.resolve(value);
+        } catch (Exception error) {
+            call.reject("Could not read native diagnostics: " + error.getClass().getSimpleName() + ": " + error.getMessage());
+        }
+    }
+
+    private String describeNativeFailure(Exception error) {
+        StringBuilder message = new StringBuilder(error.getClass().getSimpleName());
+        if (error.getMessage() != null && !error.getMessage().isEmpty()) {
+            message.append(": ").append(error.getMessage());
+        }
+        Throwable cause = error.getCause();
+        int depth = 0;
+        while (cause != null && depth < 4) {
+            message.append(" | caused by ").append(cause.getClass().getSimpleName());
+            if (cause.getMessage() != null && !cause.getMessage().isEmpty()) {
+                message.append(": ").append(cause.getMessage());
+            }
+            cause = cause.getCause();
+            depth++;
+        }
+        return redactPrivateUri(message.toString());
+    }
+
+    private String redactPrivateUri(String value) {
+        return value
+            .replaceAll("content://\\S+", "[content-uri]")
+            .replaceAll("file://\\S+", "[file-uri]");
+    }
+
     private void execute(PluginCall call, NativeTask task) {
         try {
             worker.execute(() -> {
@@ -71,11 +161,13 @@ public class FrameExtractorPlugin extends Plugin {
                     call.resolve(task.run());
                 } catch (Exception error) {
                     Log.e(TAG, "Native media operation failed", error);
-                    call.reject(error.getMessage() == null ? "Native media operation failed." : error.getMessage());
+                    appendNativeFailure(error);
+                    call.reject(describeNativeFailure(error));
                 }
             });
         } catch (RejectedExecutionException error) {
-            call.reject("The media worker is shutting down. Reopen the app and try again.");
+            appendNativeFailure(error);
+            call.reject(describeNativeFailure(error));
         }
     }
 
@@ -83,6 +175,70 @@ public class FrameExtractorPlugin extends Plugin {
     protected void handleOnDestroy() {
         worker.shutdownNow();
         super.handleOnDestroy();
+    }
+
+    @PluginMethod
+    public void saveToDownloads(PluginCall call) {
+        String filename = call.getString("filename");
+        String mimeType = call.getString("mimeType", "application/octet-stream");
+        String dataBase64 = call.getString("dataBase64");
+        if (filename == null || filename.trim().isEmpty() || dataBase64 == null || dataBase64.isEmpty()) {
+            call.reject("filename and dataBase64 are required.");
+            return;
+        }
+        execute(call, () -> {
+            byte[] bytes;
+            try {
+                bytes = Base64.decode(dataBase64, Base64.DEFAULT);
+            } catch (IllegalArgumentException error) {
+                throw new IllegalArgumentException("The selected export data is not valid base64.", error);
+            }
+            if (bytes.length == 0) throw new IllegalArgumentException("The selected frame is empty.");
+            String safeName = filename.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (safeName.isEmpty() || safeName.equals(".") || safeName.equals("..")) safeName = "frame-export.bin";
+            Uri savedUri;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, safeName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Frame Fusion");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                savedUri = getContext().getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (savedUri == null) throw new IllegalStateException("Android could not create a file in Downloads.");
+                try (OutputStream output = getContext().getContentResolver().openOutputStream(savedUri, "w")) {
+                    if (output == null) throw new IllegalStateException("Android could not open the Downloads file.");
+                    output.write(bytes);
+                    output.flush();
+                } catch (Exception error) {
+                    getContext().getContentResolver().delete(savedUri, null, null);
+                    throw error;
+                }
+                ContentValues ready = new ContentValues();
+                ready.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                getContext().getContentResolver().update(savedUri, ready, null, null);
+            } else {
+                File externalDownloads = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                if (externalDownloads == null) throw new IllegalStateException("Android Downloads storage is unavailable.");
+                File downloads = new File(externalDownloads, "Frame Fusion");
+                if (!downloads.exists() && !downloads.mkdirs()) {
+                    throw new IllegalStateException("Could not create the app Downloads folder.");
+                }
+                File outputFile = new File(downloads, safeName);
+                try (FileOutputStream output = new FileOutputStream(outputFile)) {
+                    output.write(bytes);
+                    output.flush();
+                }
+                savedUri = Uri.fromFile(outputFile);
+            }
+            JSObject result = new JSObject();
+            result.put("filename", safeName);
+            result.put("uri", savedUri.toString());
+            result.put("bytes", bytes.length);
+            result.put("folder", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                ? "Downloads/Frame Fusion"
+                : "Android/data/Frame Fusion/Downloads");
+            return result;
+        });
     }
 
     @PluginMethod
@@ -149,50 +305,112 @@ public class FrameExtractorPlugin extends Plugin {
             int width = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH));
             int height = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT));
             int bitrate = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE));
-
-            int metadataFrameCount = 0;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                metadataFrameCount = parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT));
-            }
+            int metadataFrameCount = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                ? parseInt(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT))
+                : 0;
 
             String videoMime = "";
             float nominalFps = 0f;
+            float captureFps = parseFloat(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE));
             int videoTrack = -1;
             boolean hasAudio = false;
             String audioMime = null;
             int audioChannels = 0;
             int audioSampleRate = 0;
             int audioBitrate = 0;
+            int audioTrackCount = 0;
             long trackDurationUs = durationMs * 1000L;
+            JSArray tracks = new JSArray();
 
             for (int i = 0; i < extractor.getTrackCount(); i++) {
                 MediaFormat format = extractor.getTrackFormat(i);
                 String mime = format.getString(MediaFormat.KEY_MIME);
                 if (mime == null) continue;
 
+                JSObject track = new JSObject();
+                track.put("trackIndex", i);
+                track.put("mimeType", mime);
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    long value = format.getLong(MediaFormat.KEY_DURATION);
+                    track.put("durationUs", value);
+                    trackDurationUs = Math.max(trackDurationUs, value);
+                }
+                if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    track.put("bitRate", value);
+                    if (mime.startsWith("video/") && bitrate <= 0) bitrate = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_WIDTH)) {
+                    int value = format.getInteger(MediaFormat.KEY_WIDTH);
+                    track.put("width", value);
+                    if (mime.startsWith("video/") && width <= 0) width = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_HEIGHT)) {
+                    int value = format.getInteger(MediaFormat.KEY_HEIGHT);
+                    track.put("height", value);
+                    if (mime.startsWith("video/") && height <= 0) height = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_FRAME_RATE);
+                    track.put("frameRate", value);
+                    if (mime.startsWith("video/") && videoTrack < 0) nominalFps = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    int value = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    track.put("channelCount", value);
+                    if (mime.startsWith("audio/") && !hasAudio) audioChannels = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    int value = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    track.put("sampleRate", value);
+                    if (mime.startsWith("audio/") && !hasAudio) audioSampleRate = value;
+                }
+                if (format.containsKey(MediaFormat.KEY_PROFILE)) track.put("profile", format.getInteger(MediaFormat.KEY_PROFILE));
+                if (format.containsKey(MediaFormat.KEY_LEVEL)) track.put("level", format.getInteger(MediaFormat.KEY_LEVEL));
+                if (format.containsKey(MediaFormat.KEY_COLOR_STANDARD)) track.put("colorStandard", format.getInteger(MediaFormat.KEY_COLOR_STANDARD));
+                if (format.containsKey(MediaFormat.KEY_COLOR_TRANSFER)) track.put("colorTransfer", format.getInteger(MediaFormat.KEY_COLOR_TRANSFER));
+                if (format.containsKey(MediaFormat.KEY_COLOR_RANGE)) track.put("colorRange", format.getInteger(MediaFormat.KEY_COLOR_RANGE));
+                if (format.containsKey(MediaFormat.KEY_LANGUAGE)) {
+                    String language = format.getString(MediaFormat.KEY_LANGUAGE);
+                    if (language != null) track.put("language", language);
+                }
+                tracks.put(track);
+
                 if (mime.startsWith("video/") && videoTrack < 0) {
                     videoTrack = i;
                     videoMime = mime;
-                    if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-                        nominalFps = format.getInteger(MediaFormat.KEY_FRAME_RATE);
-                    }
-                    if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                        trackDurationUs = Math.max(trackDurationUs, format.getLong(MediaFormat.KEY_DURATION));
-                    }
-                    if (width <= 0 && format.containsKey(MediaFormat.KEY_WIDTH)) width = format.getInteger(MediaFormat.KEY_WIDTH);
-                    if (height <= 0 && format.containsKey(MediaFormat.KEY_HEIGHT)) height = format.getInteger(MediaFormat.KEY_HEIGHT);
-                    if (bitrate <= 0 && format.containsKey(MediaFormat.KEY_BIT_RATE)) bitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
-                } else if (mime.startsWith("audio/") && !hasAudio) {
+                } else if (mime.startsWith("audio/")) {
                     hasAudio = true;
-                    audioMime = mime;
-                    if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) audioChannels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-                    if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) audioSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-                    if (format.containsKey(MediaFormat.KEY_BIT_RATE)) audioBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    audioTrackCount++;
+                    if (audioMime == null) audioMime = mime;
+                    if (format.containsKey(MediaFormat.KEY_BIT_RATE) && audioBitrate <= 0) {
+                        audioBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE);
+                    }
                 }
             }
             if (videoTrack < 0) throw new IllegalArgumentException("The selected file has no video track.");
+            if (durationMs <= 0 && trackDurationUs > 0) durationMs = trackDurationUs / 1000L;
 
-            float captureFps = parseFloat(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE));
+            // Android exposes container-level date/location and descriptive tags here.
+            // Video containers do not universally store a standalone EXIF block.
+            JSObject embeddedMetadata = new JSObject();
+            addMetadataTag(embeddedMetadata, retriever, "title", MediaMetadataRetriever.METADATA_KEY_TITLE);
+            addMetadataTag(embeddedMetadata, retriever, "artist", MediaMetadataRetriever.METADATA_KEY_ARTIST);
+            addMetadataTag(embeddedMetadata, retriever, "author", MediaMetadataRetriever.METADATA_KEY_AUTHOR);
+            addMetadataTag(embeddedMetadata, retriever, "album", MediaMetadataRetriever.METADATA_KEY_ALBUM);
+            addMetadataTag(embeddedMetadata, retriever, "albumArtist", MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST);
+            addMetadataTag(embeddedMetadata, retriever, "date", MediaMetadataRetriever.METADATA_KEY_DATE);
+            addMetadataTag(embeddedMetadata, retriever, "location", MediaMetadataRetriever.METADATA_KEY_LOCATION);
+            addMetadataTag(embeddedMetadata, retriever, "genre", MediaMetadataRetriever.METADATA_KEY_GENRE);
+            addMetadataTag(embeddedMetadata, retriever, "composer", MediaMetadataRetriever.METADATA_KEY_COMPOSER);
+            addMetadataTag(embeddedMetadata, retriever, "writer", MediaMetadataRetriever.METADATA_KEY_WRITER);
+            addMetadataTag(embeddedMetadata, retriever, "compilation", MediaMetadataRetriever.METADATA_KEY_COMPILATION);
+            addMetadataTag(embeddedMetadata, retriever, "discNumber", MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER);
+            addMetadataTag(embeddedMetadata, retriever, "trackNumber", MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER);
+            addMetadataTag(embeddedMetadata, retriever, "trackCount", MediaMetadataRetriever.METADATA_KEY_NUM_TRACKS);
+            addMetadataTag(embeddedMetadata, retriever, "mimeType", MediaMetadataRetriever.METADATA_KEY_MIMETYPE);
+            if (captureFps > 0f) embeddedMetadata.put("captureFrameRate", captureFps);
+
             JSObject value = new JSObject();
             value.put("uri", uri.toString());
             value.put("filename", queryDisplayName(uri));
@@ -212,11 +430,31 @@ public class FrameExtractorPlugin extends Plugin {
             value.put("audioChannels", audioChannels);
             value.put("audioSampleRate", audioSampleRate);
             value.put("audioBitrate", audioBitrate);
+            value.put("audioTrackCount", audioTrackCount);
+            value.put("trackCount", extractor.getTrackCount());
+            value.put("videoTrackIndex", videoTrack);
+            value.put("embeddedMetadata", embeddedMetadata);
+            value.put("tracks", tracks);
+            value.put("metadataScope", "Android container and media-track metadata; date/location tags are included when the source exposes them.");
             value.put("frameCountIsIndexed", false);
             return value;
         } finally {
             try { extractor.release(); } catch (RuntimeException ignored) { }
             try { retriever.release(); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void addMetadataTag(
+        JSObject target,
+        MediaMetadataRetriever retriever,
+        String name,
+        int key
+    ) {
+        try {
+            String value = retriever.extractMetadata(key);
+            if (value != null && !value.trim().isEmpty()) target.put(name, value.trim());
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Could not read embedded video tag: " + name, error);
         }
     }
 
@@ -270,8 +508,8 @@ public class FrameExtractorPlugin extends Plugin {
             extractor.selectTrack(videoTrack);
             while (true) {
                 int sampleTrack = extractor.getSampleTrackIndex();
+                if (sampleTrack < 0) break;
                 long pts = extractor.getSampleTime();
-                if (sampleTrack < 0 || pts < 0) break;
                 if (sampleTrack == videoTrack) timestamps.add(pts);
                 if (!extractor.advance()) break;
             }
@@ -321,7 +559,7 @@ public class FrameExtractorPlugin extends Plugin {
             if (spanUs > 0) averageFps = (float) ((frameCount - 1) * 1_000_000.0 / spanUs);
         }
         boolean isVfr = detectVariableFrameRate(timestamps);
-        boolean verified = diagnostics.indexVerified;
+        boolean structurallyValid = diagnostics.indexStructurallyValid;
 
         JSObject value = new JSObject();
         value.put("uri", uri.toString());
@@ -331,18 +569,41 @@ public class FrameExtractorPlugin extends Plugin {
         value.put("nominalFrameRate", nominalFps);
         value.put("averageFrameRate", averageFps);
         value.put("hasVariableFrameRate", isVfr);
-        value.put("indexVerified", verified);
+        value.put("indexStructurallyValid", structurallyValid);
+        value.put("frameMappingConfidence", "unverified");
         value.put("metadataFrameCount", metadataFrameCount);
-        value.put("ptsMonotonic", diagnostics.ptsMonotonic);
+        value.put("ptsSourceOrdered", diagnostics.ptsSourceOrdered);
         value.put("ptsDuplicates", diagnostics.ptsDuplicates);
+        value.put("ptsNegative", diagnostics.ptsNegative);
         value.put("firstPtsUs", diagnostics.firstPtsUs);
         value.put("lastPtsUs", diagnostics.lastPtsUs);
         value.put("maxGapUs", diagnostics.maxGapUs);
-        String warning = isVfr
-            ? "Variable frame rate detected; source PTS retained (first=" + diagnostics.firstPtsUs
-                + "us, last=" + diagnostics.lastPtsUs + "us, max gap=" + diagnostics.maxGapUs
-                + "us). Frame-index identity is not independently guaranteed."
-            : (verified ? "" : "Timestamp count or ordering did not pass independent verification; exact frame identity remains unverified.");
+        String structuralWarning;
+        if (structurallyValid) {
+            structuralWarning = "The sorted presentation-timestamp index is structurally valid: "
+                + "metadata count matches, all PTS are non-negative, and timestamps are unique.";
+        } else {
+            String countEvidence = metadataFrameCount <= 0
+                ? "metadata frame count is unavailable"
+                : "metadata frame count " + metadataFrameCount + " does not match indexed count " + frameCount;
+            List<String> failures = new ArrayList<>();
+            failures.add(countEvidence);
+            if (diagnostics.ptsNegative > 0) failures.add(diagnostics.ptsNegative + " negative PTS value(s)");
+            if (diagnostics.ptsDuplicates > 0) failures.add(diagnostics.ptsDuplicates + " duplicate PTS value(s)");
+            structuralWarning = "The sorted presentation-timestamp index is not structurally valid: "
+                + String.join(", ", failures) + ".";
+        }
+        String orderWarning = diagnostics.ptsSourceOrdered
+            ? "MediaExtractor sample order was presentation-ordered."
+            : "MediaExtractor sample order was reordered by presentation timestamps when building the index.";
+        String timingEvidence = "Timing evidence: " + frameCount + " PTS, first="
+            + diagnostics.firstPtsUs + "us, last=" + diagnostics.lastPtsUs
+            + "us, duplicates=" + diagnostics.ptsDuplicates + ", negative="
+            + diagnostics.ptsNegative + ", max gap=" + diagnostics.maxGapUs + "us."
+            + (isVfr ? " Variable frame rate detected." : "");
+        String warning = structuralWarning + " " + orderWarning + " " + timingEvidence
+            + " Frame-to-picture mapping confidence is unverified; these checks do not prove that "
+            + "MediaMetadataRetriever.getFrameAtIndex(n) returns the corresponding source picture.";
         value.put("warning", warning);
         return value;
     }
@@ -436,15 +697,44 @@ public class FrameExtractorPlugin extends Plugin {
         });
     }
 
+    private Bitmap decodeIndexedFrame(
+        MediaMetadataRetriever retriever,
+        int frameIndex,
+        long presentationTimeUs,
+        boolean[] usedFrameIndexApi
+    ) {
+        boolean usedIndexApi = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+        Bitmap bitmap = null;
+        if (usedIndexApi) {
+            try {
+                bitmap = retriever.getFrameAtIndex(frameIndex);
+            } catch (RuntimeException indexError) {
+                Log.w(TAG, "Frame index " + frameIndex + " was rejected; falling back to indexed PTS.", indexError);
+            }
+        }
+        if (bitmap == null) {
+            usedIndexApi = false;
+            bitmap = retriever.getFrameAtTime(
+                presentationTimeUs,
+                MediaMetadataRetriever.OPTION_CLOSEST
+            );
+        }
+        if (usedFrameIndexApi != null) usedFrameIndexApi[0] = usedIndexApi && bitmap != null;
+        if (bitmap == null) {
+            throw new IllegalStateException(
+                "Could not decode frame " + frameIndex + " at " + presentationTimeUs + "us."
+            );
+        }
+        return bitmap;
+    }
+
     private JSObject extractOne(Uri uri, String indexId, int frameIndex, long pts, int targetWidth, int quality) throws Exception {
         MediaMetadataRetriever retriever = new MediaMetadataRetriever();
         Bitmap bitmap = null;
         try {
             retriever.setDataSource(getContext(), uri);
-            boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-            bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
-                retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-            if (bitmap == null) throw new IllegalStateException("Android could not decode frame " + frameIndex + ".");
+            boolean[] usedFrameIndexApi = new boolean[1];
+            bitmap = decodeIndexedFrame(retriever, frameIndex, pts, usedFrameIndexApi);
 
             if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
                 int newHeight = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
@@ -463,7 +753,7 @@ public class FrameExtractorPlugin extends Plugin {
             value.put("width", bitmap.getWidth());
             value.put("height", bitmap.getHeight());
             value.put("fileSize", output.length());
-            value.put("exactFrameIndex", exact);
+            value.put("usedFrameIndexApi", usedFrameIndexApi[0]);
             return value;
         } finally {
             if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
@@ -499,10 +789,8 @@ public class FrameExtractorPlugin extends Plugin {
             File outputDir = getOutputDir("frames", indexId);
             for (int frameIndex = start; frameIndex <= end; frameIndex++) {
                 long pts = readPts(index, frameIndex);
-                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex) :
-                    retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (bitmap == null) throw new IllegalStateException("Could not decode frame " + frameIndex + ".");
+                boolean[] usedFrameIndexApi = new boolean[1];
+                Bitmap bitmap = decodeIndexedFrame(retriever, frameIndex, pts, usedFrameIndexApi);
                 try {
                     if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
                         int h = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
@@ -521,7 +809,7 @@ public class FrameExtractorPlugin extends Plugin {
                     frame.put("width", bitmap.getWidth());
                     frame.put("height", bitmap.getHeight());
                     frame.put("fileSize", output.length());
-                    frame.put("exactFrameIndex", exact);
+                    frame.put("usedFrameIndexApi", usedFrameIndexApi[0]);
                     frames.put(frame);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();
@@ -591,10 +879,8 @@ public class FrameExtractorPlugin extends Plugin {
             for (int position = 0; position < indexes.length; position++) {
                 int frameIndex = indexes[position];
                 long pts = readPts(index, frameIndex);
-                boolean exact = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
-                Bitmap bitmap = exact ? retriever.getFrameAtIndex(frameIndex)
-                    : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (bitmap == null) throw new IllegalStateException("Could not decode selected frame " + frameIndex + ".");
+                boolean[] usedFrameIndexApi = new boolean[1];
+                Bitmap bitmap = decodeIndexedFrame(retriever, frameIndex, pts, usedFrameIndexApi);
                 try {
                     if (targetWidth > 0 && bitmap.getWidth() > targetWidth) {
                         int h = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
@@ -613,7 +899,7 @@ public class FrameExtractorPlugin extends Plugin {
                     frame.put("width", bitmap.getWidth());
                     frame.put("height", bitmap.getHeight());
                     frame.put("fileSize", output.length());
-                    frame.put("exactFrameIndex", exact);
+                    frame.put("usedFrameIndexApi", usedFrameIndexApi[0]);
                     frames.put(frame);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();
@@ -664,10 +950,14 @@ public class FrameExtractorPlugin extends Plugin {
             for (int i = 0; i < count; i++) {
                 int frameIndex = count == 1 ? 0 : Math.round(i * (total - 1f) / (count - 1f));
                 long pts = readPts(index, frameIndex);
-                Bitmap bitmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-                    ? retriever.getFrameAtIndex(frameIndex)
-                    : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
-                if (bitmap == null) continue;
+                boolean[] usedFrameIndexApi = new boolean[1];
+                Bitmap bitmap;
+                try {
+                    bitmap = decodeIndexedFrame(retriever, frameIndex, pts, usedFrameIndexApi);
+                } catch (IllegalStateException decodeError) {
+                    Log.w(TAG, "Could not decode thumbnail frame " + frameIndex + ".", decodeError);
+                    continue;
+                }
                 try {
                     if (bitmap.getWidth() > targetWidth) {
                         int h = Math.max(1, Math.round(bitmap.getHeight() * (targetWidth / (float) bitmap.getWidth())));
@@ -687,7 +977,7 @@ public class FrameExtractorPlugin extends Plugin {
                     thumb.put("width", bitmap.getWidth());
                     thumb.put("height", bitmap.getHeight());
                     thumb.put("fileSize", output.length());
-                    thumb.put("exactFrameIndex", Build.VERSION.SDK_INT >= Build.VERSION_CODES.P);
+                    thumb.put("usedFrameIndexApi", usedFrameIndexApi[0]);
                     thumbnails.put(thumb);
                 } finally {
                     if (!bitmap.isRecycled()) bitmap.recycle();
@@ -1033,9 +1323,8 @@ public class FrameExtractorPlugin extends Plugin {
     }
 
     private Bitmap getFrameAtIndex(MediaMetadataRetriever retriever, int frameIndex, long pts) {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-            ? retriever.getFrameAtIndex(frameIndex)
-            : retriever.getFrameAtTime(pts, MediaMetadataRetriever.OPTION_CLOSEST);
+        boolean[] ignored = new boolean[1];
+        return decodeIndexedFrame(retriever, frameIndex, pts, ignored);
     }
 
     private void validateRemovalAlgorithm(String algorithm) {

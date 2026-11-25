@@ -1,3 +1,5 @@
+import { Capacitor } from "@capacitor/core";
+import { assertBrowserVideoExtractionAvailable } from "@/lib/studio/browser-extraction";
 import { evenSize, renderFrame } from "@/lib/studio/draw";
 import type { Grade, Region } from "@/lib/studio/types";
 
@@ -140,6 +142,7 @@ export async function extractVideoFrames(
   onProgress: (done: number, total: number) => void,
   onBatch: (startIndex: number, frames: Blob[]) => Promise<void>,
 ): Promise<BrowserVideoExtractionResult> {
+  assertBrowserVideoExtractionAvailable(Capacitor);
   if (!Number.isFinite(fps) || fps <= 0) throw new Error("Choose a frame rate greater than zero.");
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64)
     throw new Error("Choose a frame batch size between 1 and 64.");

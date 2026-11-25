@@ -6,7 +6,8 @@ import {
 } from "lucide-react";
 import { activeRegions, loadImage } from "@/lib/studio/media";
 import { idbDel, idbPut } from "@/lib/studio/idb";
-import { downloadOrShareBlob } from "@/lib/studio/download";
+import { saveBlobToDevice } from "@/lib/studio/download";
+import { normalizeFrameSelection } from "@/lib/studio/frame-selection";
 import { useStudio } from "@/lib/studio/store";
 import {
   DEFAULT_FRAME_STYLE, NEUTRAL_GRADE, type FrameStyle, type Grade, type Region, type Source,
@@ -76,6 +77,7 @@ export function FrameTool({
   onSeek,
   onToggle,
   onFrameAction,
+  onReplaceFrames,
   previewRef,
   editorOpen,
   onCloseEditor,
@@ -90,6 +92,7 @@ export function FrameTool({
   onSeek: (index: number) => void;
   onToggle: () => void;
   onFrameAction?: (action: FrameAction, index: number) => void;
+  onReplaceFrames?: (indexes: number[]) => void;
   previewRef: React.MutableRefObject<HTMLCanvasElement | null>;
   editorOpen: boolean;
   onCloseEditor: () => void;
@@ -104,6 +107,10 @@ export function FrameTool({
   const deleteRegion = useStudio((state) => state.deleteRegion);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const clearFrame = useStudio((state) => state.clearFrame);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedFrameIndexes, setSelectedFrameIndexes] = useState<number[]>([]);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState("");
   const edits = allEdits.filter((edit) => edit.sourceId === source.id);
   const replacements = useReplacements(source.id, allEdits);
   const gradeEdit = edits.find((edit) => edit.kind === "grade" && edit.frameIndex === frameIndex);
@@ -363,6 +370,58 @@ export function FrameTool({
     }
   }
 
+  function toggleFrameSelection(index: number) {
+    setSelectedFrameIndexes((current) => normalizeFrameSelection(
+      current.includes(index) ? current.filter((item) => item !== index) : [...current, index],
+      urls.length,
+    ));
+  }
+
+  async function downloadFrameIndexes(requestedIndexes: number[]) {
+    const indexes = normalizeFrameSelection(requestedIndexes, urls.length);
+    if (!indexes.length || isDownloading) return;
+    setIsDownloading(true);
+    setDownloadProgress(`Saving 0 of ${indexes.length} frames…`);
+    let saved = 0;
+    try {
+      for (const index of indexes) {
+        const url = urls[index];
+        if (!url) throw new Error(`Frame ${index + 1} is not available.`);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Could not read frame ${index + 1}.`);
+        const blob = await response.blob();
+        const extension = blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : "jpg";
+        const baseName = source.filename.replace(/\.\w+$/, "").replace(/[^a-z0-9-_]+/gi, "-") || "frame-fusion";
+        await saveBlobToDevice(blob, `${baseName}-frame-${String(index + 1).padStart(5, "0")}.${extension}`);
+        saved += 1;
+        setDownloadProgress(`Saved ${saved} of ${indexes.length} frames…`);
+      }
+      const destination = typeof window !== "undefined" && /Android/i.test(navigator.userAgent)
+        ? "Downloads/Frame Fusion"
+        : "your device";
+      const message = `Saved ${saved} frame${saved === 1 ? "" : "s"} to ${destination}.`;
+      setDownloadProgress(message);
+      useStudio.setState({ notice: message });
+      setSelectionMode(false);
+      setSelectedFrameIndexes([]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Could not save the selected frames.";
+      setDownloadProgress(saved ? `Saved ${saved} of ${indexes.length}. ${detail}` : detail);
+      useStudio.setState({ error: saved ? `Saved ${saved} of ${indexes.length} frames. ${detail}` : detail });
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
+  function handleStageFrameAction(action: FrameAction, index: number) {
+    if (action === "download") {
+      onSeek(index);
+      void downloadFrameIndexes([index]);
+      return;
+    }
+    onFrameAction?.(action, index);
+  }
+
   function setTool(tool: EditorTool) {
     setActiveTool(tool);
     setExportMessage("");
@@ -370,17 +429,6 @@ export function FrameTool({
     if (tool === "Portrait") onOpenPortrait();
   }
 
-  async function downloadStill() {
-    const canvas = previewRef.current;
-    if (!canvas) return;
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-    if (!blob) return;
-    try {
-      await downloadOrShareBlob(blob, `${source.filename.replace(/\.\w+$/, "")}-f${String(frameIndex).padStart(3, "0")}.png`);
-    } catch (error) {
-      useStudio.setState({ error: error instanceof Error ? error.message : "Could not share that frame." });
-    }
-  }
 
   const previewMask = activeTool === "Cutout" || activeTool === "Remove" ? cutoutCanvasRef.current : null;
   const previewDoodle = activeTool === "Doodle" ? doodleCanvasRef.current : null;
@@ -408,10 +456,48 @@ export function FrameTool({
           playing={playing}
           onSeek={onSeek}
           onToggle={onToggle}
-          onFrameAction={onFrameAction}
+          onFrameAction={handleStageFrameAction}
+          selectionMode={selectionMode}
+          selectedFrames={selectedFrameIndexes}
+          onToggleFrameSelection={toggleFrameSelection}
           onPointer={editorOpen && ["PIP", "Sticker", "Cutout", "Remove", "Doodle"].includes(activeTool) ? stagePointer : undefined}
           previewRef={previewRef}
         />
+        <div className="frame-actions-bar grid grid-cols-2 gap-2 px-3 py-3 sm:px-5">
+          {selectionMode ? (
+            <>
+              <p className="col-span-2 text-xs text-muted">{selectedFrameIndexes.length} frame{selectedFrameIndexes.length === 1 ? "" : "s"} selected</p>
+              <Button tone="line" disabled={isDownloading} onClick={() => setSelectedFrameIndexes(selectedFrameIndexes.length === urls.length ? [] : urls.map((_, index) => index))}>
+                {selectedFrameIndexes.length === urls.length ? "Clear all" : "Select all"}
+              </Button>
+              <Button disabled={!selectedFrameIndexes.length || isDownloading} onClick={() => void downloadFrameIndexes(selectedFrameIndexes)}>
+                <Download className="size-4" />Download selected
+              </Button>
+              <Button tone="line" disabled={!selectedFrameIndexes.length || isDownloading || !onReplaceFrames} onClick={() => onReplaceFrames?.(normalizeFrameSelection(selectedFrameIndexes, urls.length))}>
+                <ImagePlus className="size-4" />Replace selected
+              </Button>
+              <Button tone="quiet" disabled={isDownloading} onClick={() => { setSelectionMode(false); setSelectedFrameIndexes([]); }}>
+                Done
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button disabled={isDownloading} onClick={() => void downloadFrameIndexes([frameIndex])}>
+                <Download className="size-4" />Download
+              </Button>
+              <Button tone="line" onClick={() => onReplaceFrames?.([frameIndex])}>
+                <ImagePlus className="size-4" />Replace
+              </Button>
+              <Button tone="line" disabled aria-label="Go to Editing (planned)">
+                <SlidersHorizontal className="size-4" />Go to Editing
+              </Button>
+              <Button tone="quiet" onClick={() => { setSelectionMode(true); setSelectedFrameIndexes([frameIndex]); }}>
+                <Grid2X2 className="size-4" />Select multiple
+              </Button>
+            </>
+          )}
+          {downloadProgress ? <p className="col-span-2 text-xs text-muted" role="status">{downloadProgress}</p> : null}
+        </div>
       </div>
       <aside
         id="frame-edit-drawer"
@@ -562,7 +648,6 @@ export function FrameTool({
         <div className="studio-editor-footer">
           <div className="studio-editor-actions">
             <Button tone="quiet" onClick={() => replacementInputRef.current?.click()}><ImagePlus className="size-4" />Replace</Button>
-            <Button tone="quiet" onClick={downloadStill}><Download className="size-4" />PNG</Button>
             <Button tone="ghost" onClick={() => void clearFrame(source.id, frameIndex)}><RotateCcw className="size-4" />Reset frame</Button>
           </div>
           <div className="studio-editor-rail" aria-label="Image editing options">

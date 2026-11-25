@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { FrameExtractor, type FrameTimestamp, type PickedVideo, type VideoInfo, type FrameIndexResult } from "@/lib/native/frame-extractor";
+import { FrameExtractor, type PickedVideo } from "@/lib/native/frame-extractor";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
   Columns2,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Film,
   Scan,
@@ -24,13 +26,38 @@ import { CompareTool } from "@/components/studio/compare-tool";
 import { ExportTool } from "@/components/studio/export-tool";
 import { FaceTool } from "@/components/studio/face-tool";
 import { FrameTool } from "@/components/studio/frame-tool";
-import { CaptureWizard } from "@/components/studio/capture-wizard";
-import type { NativeVideoCapturePlan } from "@/lib/studio/extraction-plan";
-import { pendingCaptureDeleteOptions } from "@/lib/studio/native-ownership";
-import { getAndroidContentPreviewUrl } from "@/lib/native/content-preview";
+import { ExtractionPanel } from "@/components/studio/extraction-panel";
+import { cleanupPendingNativeCapture } from "@/lib/studio/native-ownership";
+import { downloadFrameAsset, saveBlobToDevice } from "@/lib/studio/download";
 import type { FrameAction } from "@/components/studio/stage";
 import { useBaseFrames, useRegionAssets, useReplacements } from "@/components/studio/use-frames";
 import { Button, Select } from "@/components/studio/ui";
+
+function formatTimelineTime(milliseconds: number): string {
+  const value = Math.max(0, Math.floor(milliseconds));
+  const hours = Math.floor(value / 3_600_000);
+  const minutes = Math.floor((value % 3_600_000) / 60_000);
+  const seconds = Math.floor((value % 60_000) / 1000);
+  const millis = value % 1000;
+  const clock = [minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":")
+    + "." + String(millis).padStart(3, "0");
+  return hours > 0 ? String(hours).padStart(2, "0") + ":" + clock : clock;
+}
+
+function nearestFrameIndexForTime(timestampsUs: number[], targetUs: number): number {
+  if (!timestampsUs.length) return 0;
+  let low = 0;
+  let high = timestampsUs.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((timestampsUs[middle] ?? 0) < targetUs) low = middle + 1;
+    else high = middle;
+  }
+  if (low === 0) return 0;
+  const before = timestampsUs[low - 1] ?? 0;
+  const after = timestampsUs[low] ?? before;
+  return targetUs - before <= after - targetUs ? low - 1 : low;
+}
 
 const toolMeta: Record<ToolId, { label: string; Icon: LucideIcon }> = {
   frames: { label: "Frames", Icon: Film },
@@ -53,44 +80,57 @@ export function Workspace({
   const ready = useStudio((state) => state.ready);
   const projects = useStudio((state) => state.projects);
   const sources = useStudio((state) => state.sources);
+  const videoSources = useStudio((state) => state.videoSources);
   const frameAssets = useStudio((state) => state.frameAssets);
   const busy = useStudio((state) => state.busy);
   const edits = useStudio((state) => state.edits);
   const regions = useStudio((state) => state.regions);
   const importVideo = useStudio((state) => state.importVideo);
-  const importNativeVideo = useStudio((state) => state.importNativeVideo);
+  const createNativeVideoSource = useStudio((state) => state.createNativeVideoSource);
+  const deleteSource = useStudio((state) => state.deleteSource);
   const upsertEdit = useStudio((state) => state.upsertEdit);
   const deleteFrame = useStudio((state) => state.deleteFrame);
+  const [frameIndex, setFrameIndex] = useState(0);
   const project = projects.find((item) => item.id === projectId);
   const mine = sources.filter((source) => source.projectId === projectId);
   const source =
     mine.find((item) => item.id === sourceId) ??
     mine.find((item) => item.role === "primary") ??
     mine[0];
-  const { urls, loading } = useBaseFrames(source, frameAssets);
+  const videoSource = videoSources.find((item) => item.id === source?.id);
+  const isNativeExtractionPending = Boolean(videoSource && videoSource.extractionComplete === false);
+  const sourceFrameTimesUs = useMemo(() => {
+    if (!source || isNativeExtractionPending) return [];
+    const nativeAssets = frameAssets
+      .filter((asset) => asset.sourceVideoId === source.id)
+      .sort((a, b) => a.frameIndex - b.frameIndex);
+    if (nativeAssets.length === source.frameCount) {
+      return nativeAssets.map((asset) => asset.presentationTimeUs);
+    }
+    const fallbackRate = Math.max(1, source.fps || 24);
+    return Array.from({ length: source.frameCount }, (_, index) =>
+      Math.round((index * 1_000_000) / fallbackRate),
+    );
+  }, [frameAssets, isNativeExtractionPending, source]);
+  const timelineStartUs = videoSource?.frameIndexDiagnostics?.firstPtsUs
+    ?? sourceFrameTimesUs[0]
+    ?? 0;
+  const timelineDurationMs = Math.max(1, videoSource?.durationMs ?? source?.durationMs ?? 1);
+  const timelineEndUs = timelineStartUs + timelineDurationMs * 1000;
+  const selectedTimeUs = sourceFrameTimesUs[frameIndex] ?? timelineStartUs;
+  const selectedTimeMs = Math.max(0, (selectedTimeUs - timelineStartUs) / 1000);
+  const { urls, loading } = useBaseFrames(isNativeExtractionPending ? undefined : source, frameAssets);
   const replacements = useReplacements(source?.id, edits);
   const regionAssets = useRegionAssets(source?.id, regions);
-  const [frameIndex, setFrameIndex] = useState(0);
   const [isNativeAndroid, setIsNativeAndroid] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [nativePreparing, setNativePreparing] = useState(false);
-  const [pendingCapture, setPendingCapture] = useState<{
-    sourceId: string;
-    picked: PickedVideo;
-    previewUrl: string;
-    info: VideoInfo;
-    index: FrameIndexResult;
-    timestamps: FrameTimestamp[];
-  } | null>(null);
-  const cleanedCaptureIds = useRef(new Set<string>());
+  const replaceTargets = useRef<Array<{ sourceId: string; projectId: string; frameIndex: number }>>([]);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const frameImageRef = useRef<HTMLInputElement>(null);
-  const replaceTarget = useRef<{ sourceId: string; projectId: string; frameIndex: number } | null>(
-    null,
-  );
 
   useEffect(() => {
     if (!ready || !source || source.id === sourceId) return;
@@ -122,14 +162,16 @@ export function Workspace({
 
   useEffect(() => {
     if (!playing || !source?.frameCount) return;
-    const timer = window.setInterval(
-      () => {
-        setFrameIndex((current) => (current + 1) % source.frameCount);
-      },
-      1000 / Math.max(1, source.fps),
-    );
-    return () => window.clearInterval(timer);
-  }, [playing, source]);
+    const nextIndex = (frameIndex + 1) % source.frameCount;
+    const currentPts = sourceFrameTimesUs[frameIndex] ?? 0;
+    const nextPts = nextIndex === 0
+      ? Math.max(currentPts + 1, timelineEndUs)
+      : (sourceFrameTimesUs[nextIndex] ?? currentPts + Math.round(1_000_000 / Math.max(1, source.fps || 24)));
+    const fallbackDelay = 1000 / Math.max(1, source.fps || 24);
+    const delayMs = Math.max(1, nextPts > currentPts ? (nextPts - currentPts) / 1000 : fallbackDelay);
+    const timer = window.setTimeout(() => setFrameIndex(nextIndex), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [playing, source, videoSource, frameIndex, sourceFrameTimesUs, timelineEndUs]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -178,9 +220,37 @@ export function Workspace({
     });
   }
 
-  function onFrameAction(action: FrameAction, index: number) {
+  function onReplaceFrames(indexes: number[]) {
+    if (!source || !indexes.length) return;
+    setPlaying(false);
+    replaceTargets.current = [...new Set(indexes)]
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < source.frameCount)
+      .sort((a, b) => a - b)
+      .map((frameIndex) => ({ sourceId: source.id, projectId: source.projectId, frameIndex }));
+    if (replaceTargets.current.length) frameImageRef.current?.click();
+  }
+
+  async function onFrameAction(action: FrameAction, index: number) {
     if (!source) return;
     setPlaying(false);
+    if (action === "download") {
+      const asset = frameAssets.find((item) => item.sourceVideoId === source.id && item.frameIndex === index);
+      try {
+        if (asset) {
+          await downloadFrameAsset(asset, source.filename);
+        } else {
+          const url = urls[index];
+          if (!url) throw new Error("That frame is not available for download.");
+          const response = await fetch(url);
+          if (!response.ok) throw new Error("Could not read the selected frame.");
+          const blob = await response.blob();
+          await saveBlobToDevice(blob, `${source.filename.replace(/\.\w+$/, "")}-frame-${String(index + 1).padStart(5, "0")}.jpg`);
+        }
+      } catch (error) {
+        useStudio.setState({ error: error instanceof Error ? error.message : "Could not download that frame." });
+      }
+      return;
+    }
     if (action === "edit") {
       setFrameIndex(index);
       openTool("frames");
@@ -190,130 +260,95 @@ export function Workspace({
     }
     if (action === "replace") {
       setFrameIndex(index);
-      replaceTarget.current = {
-        sourceId: source.id,
-        projectId: source.projectId,
-        frameIndex: index,
-      };
-      frameImageRef.current?.click();
+      onReplaceFrames([index]);
       return;
     }
     void deleteFrame(source.id, index)
-      .then(() =>
-        setFrameIndex((current) =>
-          Math.min(current > index ? current - 1 : current, source.frameCount - 2),
-        ),
-      )
-      .catch((error) =>
-        useStudio.setState({
-          error: error instanceof Error ? error.message : "Could not remove that frame.",
-        }),
-      );
+      .then(() => setFrameIndex((current) => Math.min(current > index ? current - 1 : current, source.frameCount - 2)))
+      .catch((error) => useStudio.setState({
+        error: error instanceof Error ? error.message : "Could not remove that frame.",
+      }));
   }
 
-  async function onReplacementImage(file: File) {
-    const target = replaceTarget.current;
-    replaceTarget.current = null;
-    if (!target) return;
-    if (!file.type.startsWith("image/")) {
-      useStudio.setState({ error: "Choose an image file to replace this frame." });
+  async function onReplacementImages(files: File[]) {
+    const targets = replaceTargets.current;
+    replaceTargets.current = [];
+    if (!targets.length) return;
+    if (files.length !== targets.length) {
+      useStudio.setState({ error: `Select exactly ${targets.length} image${targets.length === 1 ? "" : "s"} to replace the selected frames.` });
       return;
     }
-    if (file.size > 20 * 1024 * 1024) {
-      useStudio.setState({ error: "Keep replacement images under 20 MB." });
-      return;
+    let completed = 0;
+    for (let index = 0; index < targets.length; index += 1) {
+      const file = files[index];
+      const target = targets[index];
+      if (!file || !target) continue;
+      if (!file.type.startsWith("image/")) {
+        useStudio.setState({ error: `File ${index + 1} is not an image.` });
+        break;
+      }
+      if (file.size > 20 * 1024 * 1024) {
+        useStudio.setState({ error: `Keep replacement images under 20 MB (file ${index + 1}).` });
+        break;
+      }
+      const id = crypto.randomUUID();
+      const blobKey = `r:${id}`;
+      try {
+        await idbPut("blobs", blobKey, file);
+        await upsertEdit({
+          id,
+          projectId: target.projectId,
+          sourceId: target.sourceId,
+          frameIndex: target.frameIndex,
+          kind: "replace",
+          blobKey,
+        });
+        completed += 1;
+      } catch (error) {
+        await idbDel("blobs", blobKey).catch(() => undefined);
+        useStudio.setState({ error: error instanceof Error ? error.message : "Could not replace a selected frame." });
+        break;
+      }
     }
-    const id = crypto.randomUUID();
-    const blobKey = `r:${id}`;
-    try {
-      await idbPut("blobs", blobKey, file);
-      await upsertEdit({
-        id,
-        projectId: target.projectId,
-        sourceId: target.sourceId,
-        frameIndex: target.frameIndex,
-        kind: "replace",
-        blobKey,
-      });
-      useStudio.setState({ notice: `Frame ${target.frameIndex + 1} was replaced.` });
-    } catch (error) {
-      await idbDel("blobs", blobKey).catch(() => undefined);
-      useStudio.setState({
-        error: error instanceof Error ? error.message : "Could not replace that frame.",
-      });
-    }
+    if (completed) useStudio.setState({ notice: `Replaced ${completed} of ${targets.length} selected frame${targets.length === 1 ? "" : "s"}.` });
   }
 
   useEffect(() => {
     setIsNativeAndroid(Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android");
   }, []);
 
-  async function cleanupPendingCapture(capture: NonNullable<typeof pendingCapture>) {
-    if (cleanedCaptureIds.current.has(capture.sourceId)) return;
-    cleanedCaptureIds.current.add(capture.sourceId);
-    await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
-      useStudio.getState().videoSources,
-      { sourceId: capture.sourceId, uri: capture.picked.uri },
-    )).catch(() => undefined);
-  }
-
-  async function cancelPendingCapture() {
-    const capture = pendingCapture;
-    setPendingCapture(null);
-    useStudio.setState({ busy: null });
-    if (capture) await cleanupPendingCapture(capture);
-  }
-
   async function onNativeImport() {
     if (!project || nativePreparing) return;
     const sourceId = crypto.randomUUID();
     let pickedForCleanup: PickedVideo | null = null;
+    let storeCleanupOwnsPendingKey = false;
     setNativePreparing(true);
     useStudio.setState({ error: null, notice: null, busy: "Choose a source video…" });
     try {
       const picked = await FrameExtractor.pickVideo();
       pickedForCleanup = picked;
-      useStudio.setState({ busy: "Reading video metadata and building the timestamp index…" });
-      const [info, index] = await Promise.all([
-        FrameExtractor.getVideoInfo(picked.uri),
-        FrameExtractor.buildFrameIndex(picked.uri, sourceId),
-      ]);
+      useStudio.setState({ busy: "Reading video metadata…" });
+      const info = await FrameExtractor.getVideoInfo(picked.uri);
+      useStudio.setState({ busy: "Building the source-owned timestamp index…" });
+      const index = await FrameExtractor.buildFrameIndex(picked.uri, sourceId);
       if (!index.frameCount || index.indexId !== sourceId) {
         throw new Error("No frames could be indexed with the selected source storage key.");
       }
-      const timestamps: FrameTimestamp[] = [];
-      const pageSize = 5_000;
-      const pageCount = Math.ceil(index.frameCount / pageSize);
-      for (let start = 0; start < index.frameCount; start += pageSize) {
-        const limit = Math.min(pageSize, index.frameCount - start);
-        const page = await FrameExtractor.getFrameTimestampPage(picked.uri, index.indexId, start, limit);
-        if (page.indexId !== index.indexId || page.startFrameIndex !== start
-          || page.entries.length !== limit || page.totalFrameCount !== index.frameCount) {
-          throw new Error(`The native timestamp index returned an incomplete page at frame ${start}.`);
-        }
-        timestamps.push(...page.entries);
-        useStudio.setState({ busy: `Reading exact frame timestamps… ${Math.min(pageCount, Math.floor(start / pageSize) + 1)} of ${pageCount}` });
-      }
-      if (timestamps.some((entry, indexPosition) => entry.frameIndex !== indexPosition)) {
-        throw new Error("The native timestamp index returned frames out of order.");
-      }
-      cleanedCaptureIds.current.delete(sourceId);
-      setPendingCapture({
-        sourceId,
-        picked,
-        previewUrl: getAndroidContentPreviewUrl(picked.uri, window.location.origin),
-        info,
-        index,
-        timestamps,
+      storeCleanupOwnsPendingKey = true;
+      const id = await createNativeVideoSource(project.id, sourceId, picked, info, index);
+      setFrameIndex(0);
+      void navigate({
+        to: "/projects/$projectId",
+        params: { projectId },
+        search: { tool, source: id },
       });
-      useStudio.setState({ busy: null });
     } catch (error) {
-      if (pickedForCleanup) {
-        cleanedCaptureIds.current.add(sourceId);
-        await FrameExtractor.deleteVideoData(pendingCaptureDeleteOptions(
+      if (pickedForCleanup && !storeCleanupOwnsPendingKey) {
+        await cleanupPendingNativeCapture(
           useStudio.getState().videoSources,
           { sourceId, uri: pickedForCleanup.uri },
-        )).catch(() => undefined);
+          (options) => FrameExtractor.deleteVideoData(options),
+        ).catch(() => false);
       }
       useStudio.setState({
         busy: null,
@@ -324,21 +359,19 @@ export function Workspace({
     }
   }
 
-  async function onNativeCapture(plan: NativeVideoCapturePlan) {
-    if (!project) return;
+  async function cancelNativeExtraction() {
+    if (!source || !isNativeExtractionPending) return;
+    const id = source.id;
     try {
-      const id = await importNativeVideo(project.id, plan);
-      setPendingCapture(null);
-      setFrameIndex(0);
+      await deleteSource(id);
+      const remaining = useStudio.getState().sources.find((item) => item.projectId === projectId);
       void navigate({
         to: "/projects/$projectId",
         params: { projectId },
-        search: { tool, source: id },
+        search: { tool, source: remaining?.id },
       });
-    } catch {
-      cleanedCaptureIds.current.add(plan.sourceId);
-      setPendingCapture(null);
-      /* The store owns rollback and reports the native extraction error. */
+    } catch (error) {
+      useStudio.setState({ error: error instanceof Error ? error.message : "Could not cancel the indexed video import." });
     }
   }
 
@@ -449,6 +482,13 @@ export function Workspace({
               ))}
             </Select>
           </label>
+          {videoSource ? (
+            <span className="hidden shrink-0 rounded-xl border border-line px-2.5 py-2 font-mono text-[10px] text-muted sm:inline-flex">
+              {videoSource.hasVariableFrameRate
+                ? "VFR"
+                : (videoSource.nominalFrameRate || videoSource.averageFrameRate).toFixed(2) + " FPS"}
+            </span>
+          ) : null}
           <input
             ref={fileRef}
             className="sr-only"
@@ -465,10 +505,11 @@ export function Workspace({
             className="sr-only"
             type="file"
             accept="image/*"
+            multiple
             onChange={(event) => {
-              const file = event.currentTarget.files?.[0];
-              if (file) void onReplacementImage(file);
-              else replaceTarget.current = null;
+              const files = Array.from(event.currentTarget.files ?? []);
+              if (files.length) void onReplacementImages(files);
+              else replaceTargets.current = [];
               event.currentTarget.value = "";
             }}
           />
@@ -482,19 +523,120 @@ export function Workspace({
           </Button>
         </div>
 
+        {videoSource && source && !isNativeExtractionPending ? (
+          <>
+            <section className="shrink-0 border-b border-line bg-surface px-3 py-2.5 sm:px-5" aria-label="Video timeline">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label="Previous frame"
+                  className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+                  onClick={() => { setPlaying(false); setFrameIndex((value) => Math.max(0, value - 1)); }}
+                ><ChevronLeft className="size-5" aria-hidden="true" /></button>
+                <output className="min-w-0 flex-1 text-center font-mono text-sm tabular-nums">
+                  {formatTimelineTime(selectedTimeMs)}
+                </output>
+                <label className="flex shrink-0 items-center gap-1">
+                  <span className="sr-only">Seek to time in seconds</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    aria-label="Seek to time in seconds"
+                    min={0}
+                    max={timelineDurationMs / 1000}
+                    step={0.001}
+                    value={(selectedTimeMs / 1000).toFixed(3)}
+                    onChange={(event) => {
+                      const seconds = Number(event.target.value);
+                      if (Number.isFinite(seconds)) {
+                        setPlaying(false);
+                        const target = timelineStartUs + Math.min(videoSource.durationMs, Math.max(0, seconds * 1000)) * 1000;
+                        setFrameIndex(nearestFrameIndexForTime(sourceFrameTimesUs, target));
+                      }
+                    }}
+                    className="h-8 w-[4.75rem] rounded-md border border-line bg-bg px-1 text-center font-mono text-xs tabular-nums"
+                  />
+                  <span className="text-[10px] text-muted">s</span>
+                </label>
+                <span className="hidden shrink-0 text-[10px] text-muted sm:inline">Frame {frameIndex + 1}/{source.frameCount}</span>
+                <button
+                  type="button"
+                  aria-label="Next frame"
+                  className="grid size-9 shrink-0 place-items-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg"
+                  onClick={() => { setPlaying(false); setFrameIndex((value) => Math.min(source.frameCount - 1, value + 1)); }}
+                ><ChevronRight className="size-5" aria-hidden="true" /></button>
+              </div>
+              <input
+                type="range"
+                aria-label="Seek by video time in seconds"
+                min={0}
+                max={timelineDurationMs}
+                step={1}
+                value={Math.min(timelineDurationMs, selectedTimeMs)}
+                onChange={(event) => {
+                  setPlaying(false);
+                  const target = timelineStartUs + Number(event.target.value) * 1000;
+                  setFrameIndex(nearestFrameIndexForTime(sourceFrameTimesUs, target));
+                }}
+                className="mt-1.5 h-5 w-full cursor-pointer accent-amber"
+              />
+              <div className="flex justify-between font-mono text-[9px] text-muted">
+                <span>00:00.000</span><span>{formatTimelineTime(timelineDurationMs)}</span>
+              </div>
+            </section>
+            <details className="shrink-0 border-b border-line bg-bg px-4 py-2">
+              <summary className="cursor-pointer list-none text-xs font-medium text-muted">
+                Video metadata · {videoSource.width}×{videoSource.height} · {videoSource.frameCount.toLocaleString()} indexed frames
+              </summary>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2 py-3 text-xs sm:grid-cols-3">
+                <div><p className="text-muted">Duration</p><p className="font-mono">{formatTimelineTime(videoSource.durationMs)}</p></div>
+                <div><p className="text-muted">Nominal FPS</p><p className="font-mono">{videoSource.nominalFrameRate > 0 ? videoSource.nominalFrameRate.toFixed(3) : "Not reported"}</p></div>
+                <div><p className="text-muted">Average FPS</p><p className="font-mono">{videoSource.averageFrameRate > 0 ? videoSource.averageFrameRate.toFixed(3) : "Not available"}</p></div>
+                <div><p className="text-muted">Capture FPS</p><p className="font-mono">{videoSource.captureFrameRate ? videoSource.captureFrameRate.toFixed(3) : "Not reported"}</p></div>
+                <div><p className="text-muted">Video codec</p><p className="font-mono break-all">{videoSource.videoMimeType || "Not reported"}</p></div>
+                <div><p className="text-muted">Video bitrate</p><p className="font-mono">{videoSource.videoBitrate > 0 ? `${Math.round(videoSource.videoBitrate / 1000)} kbps` : "Not reported"}</p></div>
+                <div><p className="text-muted">Audio tracks</p><p className="font-mono">{videoSource.audioTrackCount ?? (videoSource.hasAudio ? 1 : 0)}</p></div>
+                <div><p className="text-muted">Index integrity</p><p className="font-mono">{videoSource.frameIndexStructurallyValid === undefined ? "Legacy / unknown" : videoSource.frameIndexStructurallyValid ? "Structural checks passed" : "Structural checks failed"}</p></div>
+                <div><p className="text-muted">Picture mapping</p><p className="font-mono">{videoSource.frameMappingConfidence ?? "unverified"}</p></div>
+              </div>
+              {videoSource.frameIndexDiagnostics ? (
+                <p className="border-t border-line py-2 text-[11px] leading-5 text-muted">
+                  Source PTS ordered: {videoSource.frameIndexDiagnostics.ptsSourceOrdered ? "yes" : "no"} · duplicates: {videoSource.frameIndexDiagnostics.ptsDuplicates} · negative: {videoSource.frameIndexDiagnostics.ptsNegative} · first/last: {videoSource.frameIndexDiagnostics.firstPtsUs}/{videoSource.frameIndexDiagnostics.lastPtsUs} µs · max gap: {videoSource.frameIndexDiagnostics.maxGapUs} µs
+                </p>
+              ) : null}
+              {videoSource.embeddedMetadata && Object.keys(videoSource.embeddedMetadata).length ? (
+                <div className="border-t border-line py-2">
+                  <p className="mb-2 text-[11px] font-semibold text-muted">Embedded container tags</p>
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] sm:grid-cols-3">
+                    {Object.entries(videoSource.embeddedMetadata).map(([key, value]) => (
+                      <div key={key} className="min-w-0"><dt className="text-muted">{key}</dt><dd className="break-words">{value}</dd></div>
+                    ))}
+                  </dl>
+                </div>
+              ) : null}
+              {videoSource.tracks?.length ? (
+                <div className="border-t border-line py-2">
+                  <p className="mb-2 text-[11px] font-semibold text-muted">Media tracks</p>
+                  <div className="space-y-1">
+                    {videoSource.tracks.map((track) => (
+                      <p key={track.trackIndex} className="font-mono text-[10px] leading-5 text-muted">
+                        #{track.trackIndex} {track.mimeType} · {track.width ?? "—"}×{track.height ?? "—"} · {track.frameRate ?? "—"} FPS · {track.channelCount ? `${track.channelCount} ch` : ""} {track.sampleRate ? `${track.sampleRate} Hz` : ""}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {videoSource.metadataScope ? <p className="border-t border-line pt-2 text-[10px] leading-5 text-muted">{videoSource.metadataScope}</p> : null}
+            </details>
+          </>
+        ) : null}
+
         <main className="flex min-h-0 flex-1 flex-col">
           {nativePreparing ? (
             <div className="m-auto flex max-w-md flex-col items-center gap-3 px-6 text-center" role="status">
               <span className="size-8 animate-spin rounded-full border-2 border-cyan border-r-transparent" />
               <p className="text-sm text-muted">{busy || "Preparing your video preview…"}</p>
             </div>
-          ) : pendingCapture ? (
-            <CaptureWizard
-              video={pendingCapture}
-              busy={busy}
-              onCancel={() => void cancelPendingCapture()}
-              onExtract={(plan) => void onNativeCapture(plan)}
-            />
           ) : !source ? (
             <div className="m-auto max-w-md px-6 py-10 text-center">
               <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-surface-2 text-amber">
@@ -513,6 +655,8 @@ export function Workspace({
                 Import video
               </Button>
             </div>
+          ) : isNativeExtractionPending && videoSource ? (
+            <ExtractionPanel videoSource={videoSource} onCancel={() => void cancelNativeExtraction()} />
           ) : loading || !urls.length ? (
             <p className="m-auto text-sm text-muted" role="status">
               Preparing frame rail…
@@ -528,6 +672,7 @@ export function Workspace({
                   onSeek={setFrameIndex}
                   onToggle={() => setPlaying((value) => !value)}
                   onFrameAction={onFrameAction}
+                  onReplaceFrames={onReplaceFrames}
                   previewRef={previewRef}
                   editorOpen={editOpen}
                   onCloseEditor={() => setEditOpen(false)}
@@ -594,7 +739,7 @@ export function Workspace({
           )}
         </main>
 
-        {!pendingCapture && !nativePreparing ? (
+        {!isNativeExtractionPending && !nativePreparing ? (
           <nav
             className="studio-dock flex shrink-0 items-center justify-between gap-3 px-3 sm:px-5"
             aria-label="Editor tools"

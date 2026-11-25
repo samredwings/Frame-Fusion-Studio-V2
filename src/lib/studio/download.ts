@@ -2,6 +2,7 @@ import type { FrameAsset } from "@/lib/studio/types";
 import { Capacitor } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
+import { FrameExtractor } from "@/lib/native/frame-extractor";
 
 const EXPORT_FILE_PREFIX = "ff-export-";
 const EXPORT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -20,6 +21,50 @@ function toBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(new Error("Could not prepare the export file."));
     reader.readAsDataURL(blob);
   });
+}
+
+export function sanitizeDownloadFilename(filename: string): string {
+  return Array.from(filename, (character) =>
+    character.charCodeAt(0) < 32 || '\\\\/:*?"<>|'.includes(character) ? "_" : character,
+  ).join("").trim() || "export";
+}
+
+async function saveBlobToAndroidDownloads(blob: Blob, filename: string): Promise<void> {
+  await FrameExtractor.saveToDownloads(filename, blob.type || "application/octet-stream", await toBase64(blob));
+}
+
+/** Save a file directly to a user-visible device folder; do not open the Share chooser. */
+export async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
+  const safeFilename = sanitizeDownloadFilename(filename);
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === "android") {
+    await saveBlobToAndroidDownloads(blob, safeFilename);
+    return;
+  }
+  if (Capacitor.isNativePlatform()) {
+    const file = await Filesystem.writeFile({ path: safeFilename, data: await toBase64(blob), directory: Directory.Documents, recursive: true });
+    await Share.share({ title: safeFilename, dialogTitle: "Save or share your export", files: [file.uri] });
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = safeFilename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+/** Save selected files one by one to avoid holding every decoded frame in memory. */
+export async function saveBlobsToDevice(
+  files: Array<{ blob: Blob; filename: string }>,
+  onProgress?: (saved: number, total: number) => void,
+): Promise<number> {
+  let saved = 0;
+  for (const file of files) {
+    await saveBlobToDevice(file.blob, file.filename);
+    saved += 1;
+    onProgress?.(saved, files.length);
+  }
+  return saved;
 }
 
 export async function downloadOrShareBlob(blob: Blob, filename: string): Promise<void> {

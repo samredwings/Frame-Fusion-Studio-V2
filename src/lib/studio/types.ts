@@ -158,6 +158,24 @@ export type RepairStatus = "draft" | "ready" | "rendering" | "completed" | "fail
 export type MaskShape = "brush" | "ellipse" | "rectangle" | "lasso";
 export type BlendMode = "normal" | "overlay" | "soft-light" | "multiply" | "screen";
 
+export interface VideoTrackMetadata {
+  trackIndex: number;
+  mimeType: string;
+  durationUs?: number;
+  bitRate?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  profile?: number;
+  level?: number;
+  colorStandard?: number;
+  colorTransfer?: number;
+  colorRange?: number;
+  language?: string;
+}
+
 export interface VideoMetadata {
   uri: string;
   filename: string;
@@ -167,6 +185,7 @@ export interface VideoMetadata {
   metadataFrameCount: number;
   nominalFrameRate: number;
   averageFrameRate: number;
+  captureFrameRate?: number;
   width: number;
   height: number;
   rotation: 0 | 90 | 180 | 270;
@@ -177,6 +196,24 @@ export interface VideoMetadata {
   audioChannels?: number;
   audioSampleRate?: number;
   audioBitrate?: number;
+  /** Container tags exposed by Android, including capture date/location when present. */
+  embeddedMetadata?: Record<string, string>;
+  /** Technical properties read from each MediaExtractor track. */
+  tracks?: VideoTrackMetadata[];
+  audioTrackCount?: number;
+  trackCount?: number;
+  videoTrackIndex?: number;
+  metadataScope?: string;
+}
+
+export interface FrameIndexDiagnosticsSummary {
+  metadataFrameCount: number;
+  ptsSourceOrdered: boolean;
+  ptsDuplicates: number;
+  ptsNegative: number;
+  firstPtsUs: number;
+  lastPtsUs: number;
+  maxGapUs: number;
 }
 
 export interface VideoSource {
@@ -190,9 +227,23 @@ export interface VideoSource {
   frameCount: number;
   nominalFrameRate: number;
   averageFrameRate: number;
+  captureFrameRate?: number;
   hasVariableFrameRate: boolean;
+  embeddedMetadata?: Record<string, string>;
+  tracks?: VideoTrackMetadata[];
+  audioTrackCount?: number;
+  trackCount?: number;
+  videoTrackIndex?: number;
+  metadataScope?: string;
   frameIndexId: string;
-  frameIndexVerified: boolean;
+  /** False while the source is indexed but has not yet materialized its selected frame assets. */
+  extractionComplete?: boolean;
+  /** Optional for legacy persisted records created before structural diagnostics were named accurately. */
+  frameIndexStructurallyValid?: boolean;
+  /** Source/decode-order and sorted-PTS evidence retained with the imported source. */
+  frameIndexDiagnostics?: FrameIndexDiagnosticsSummary;
+  /** No source-picture mapping is independently verified by timestamp-index construction. */
+  frameMappingConfidence?: "unverified";
   captureMethod?: "manual" | "interval";
   captureIntervalMs?: number;
   captureRanges?: Array<{ id: string; startMs: number; endMs: number }>;
@@ -222,7 +273,10 @@ export interface FrameAsset {
   id: string;
   projectId: string;
   sourceVideoId: string;
+  /** Position in the selected-frame sequence used by the editor. */
   frameIndex: number;
+  /** Original position in the source timestamp index. */
+  sourceFrameIndex?: number;
   presentationTimeUs: number;
   durationUs: number;
   fullResolutionPath: string;
@@ -234,7 +288,8 @@ export interface FrameAsset {
   sequenceId?: string;
   isEdited: boolean;
   isReplacementCandidate: boolean;
-  exactFrameIndex?: boolean;
+  /** True means the Android frame-index API was selected, not that picture correspondence was verified. */
+  usedFrameIndexApi?: boolean;
   createdAt: number;
 }
 

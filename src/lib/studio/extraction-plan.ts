@@ -159,13 +159,41 @@ export function selectFramesForCapture(
 }
 
 
-/** Count the exact de-duplicated source-frame selection shown by the capture wizard. */
+export type CaptureFrameEstimate = {
+  count: number;
+  error: string | null;
+};
+
+/**
+ * A render-safe estimate for temporarily incomplete wizard state. The capture
+ * action still validates with selectFramesForCapture and surfaces the same error.
+ */
+export function getCaptureFrameEstimate(
+  entries: FrameTimestampLike[],
+  ranges: CaptureRange[],
+  method: CaptureMethod,
+  intervalMs: number,
+): CaptureFrameEstimate {
+  if (!ranges.length) return { count: 0, error: null };
+  try {
+    return {
+      count: selectFramesForCapture(entries, mergeCaptureRanges(ranges), method, intervalMs).length,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      count: 0,
+      error: error instanceof Error ? error.message : "The selected capture range is not valid.",
+    };
+  }
+}
+
+/** Count the exact de-duplicated selection without allowing invalid UI state to throw during render. */
 export function estimateCaptureFrameCount(
   entries: FrameTimestampLike[],
   ranges: CaptureRange[],
   method: CaptureMethod,
   intervalMs: number,
 ): number {
-  if (!ranges.length) return 0;
-  return selectFramesForCapture(entries, mergeCaptureRanges(ranges), method, intervalMs).length;
+  return getCaptureFrameEstimate(entries, ranges, method, intervalMs).count;
 }

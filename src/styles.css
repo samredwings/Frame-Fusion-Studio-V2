@@ -661,3 +661,135 @@
     height: min(58dvh, 580px);
   }
 }
+.extraction-workbench {
+  background: var(--color-bg);
+}
+
+.extraction-preview {
+  width: min(calc(100% - 3rem), 88rem);
+  margin-inline: auto;
+}
+
+.extraction-video {
+  display: block;
+  width: 100%;
+  height: min(72dvh, 56rem);
+  min-height: min(26rem, 58dvh);
+  max-height: 78dvh;
+  object-fit: contain;
+  box-shadow: var(--shadow-raised);
+}
+
+.extraction-video-placeholder {
+  height: min(72dvh, 56rem);
+  min-height: min(26rem, 58dvh);
+  max-height: 78dvh;
+}
+
+.extraction-controls {
+  width: min(calc(100% - 3rem), 88rem);
+  margin-inline: auto;
+}
+
+.extraction-range-control {
+  position: relative;
+  height: 2.5rem;
+}
+
+.extraction-range-track {
+  position: absolute;
+  inset: 50% 0 auto;
+  height: 0.35rem;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--color-line);
+}
+
+.extraction-range-track span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-amber);
+}
+
+.extraction-range-control input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  pointer-events: none;
+  appearance: none;
+  background: transparent;
+}
+
+.extraction-range-control input[data-edge="start"] {
+  z-index: 1;
+}
+
+.extraction-range-control input[data-edge="end"] {
+  z-index: 2;
+}
+
+.extraction-range-control input[type="range"]::-webkit-slider-runnable-track {
+  height: 0.35rem;
+  background: transparent;
+}
+
+.extraction-range-control input[type="range"]::-moz-range-track {
+  height: 0.35rem;
+  background: transparent;
+}
+
+.extraction-range-control input[type="range"]::-webkit-slider-thumb {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: -0.4rem;
+  border: 2px solid var(--color-bg);
+  border-radius: 999px;
+  pointer-events: auto;
+  appearance: none;
+  background: var(--color-amber);
+  box-shadow: 0 0 0 1px var(--color-amber);
+}
+
+.extraction-range-control input[type="range"]::-moz-range-thumb {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--color-bg);
+  border-radius: 999px;
+  pointer-events: auto;
+  background: var(--color-amber);
+  box-shadow: 0 0 0 1px var(--color-amber);
+}
+
+.extraction-range-control input[type="range"]:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--color-fg);
+  outline-offset: 3px;
+}
+
+@media (max-width: 640px) {
+  .extraction-preview,
+  .extraction-controls {
+    width: calc(100% - 2rem);
+  }
+
+  .extraction-video,
+  .extraction-video-placeholder {
+    height: min(70dvh, 52rem);
+    min-height: min(24rem, 55dvh);
+    max-height: 76dvh;
+  }
+}
+
+
+.frame-actions-bar {
+  border-top: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-surface) 68%, var(--color-bg));
+}
+
+.frame-actions-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

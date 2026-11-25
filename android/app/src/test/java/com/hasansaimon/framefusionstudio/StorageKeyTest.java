@@ -61,4 +61,13 @@ public class StorageKeyTest {
         assertTrue(new File(keyBThumbs, "sample.bin").isFile());
         assertTrue(new File(keyBRepairs, "sample.bin").isFile());
     }
+    @Test
+    public void acceptsLegacySha256UriStorageKeys() {
+        String legacyUriHash = "a".repeat(64);
+        assertTrue(StorageKey.isValid(legacyUriHash));
+        assertEquals(
+            new File(new File("/tmp/files", "frame_fusion/indexes"), legacyUriHash + ".pts"),
+            StorageKey.resolveIndexPath(new File("/tmp/files"), legacyUriHash));
+    }
+
 }
