@@ -256,6 +256,7 @@ export interface FrameExtractorPlugin {
     uri: string;
     uriPermissionReleased: boolean;
   }>;
+  deleteExtractedFrames(options: { indexId: string }): Promise<{ deleted: boolean; indexId: string }>;
   getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }>;
   saveToDownloads(options: { filename: string; mimeType: string; dataBase64: string }): Promise<{
     filename: string;
@@ -406,6 +407,10 @@ export const FrameExtractor = {
   deleteVideoData(options: { indexId: string; uri: string; releaseUriPermission?: boolean }) {
     assertAndroid();
     return NativeFrameExtractor.deleteVideoData(options);
+  },
+  deleteExtractedFrames(indexId: string) {
+    assertAndroid();
+    return NativeFrameExtractor.deleteExtractedFrames({ indexId });
   },
   getNativeDiagnostics(): Promise<{ text: string; sizeBytes: number }> {
     assertAndroid();
