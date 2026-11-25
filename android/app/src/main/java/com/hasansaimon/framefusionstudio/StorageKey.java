@@ -34,6 +34,12 @@ final class StorageKey {
         return new File(new File(filesDir, "frame_fusion/" + folder), storageKey);
     }
 
+    /** Delete only extracted frame files so a failed extraction can be retried with its index intact. */
+    static void deleteExtractedFrames(File filesDir, String storageKey) throws IOException {
+        requireValid(storageKey);
+        deleteRecursively(resolveOutputDir(filesDir, "frames", storageKey));
+    }
+
     /** Delete only one source-owned media namespace, never another source sharing its URI. */
     static void deleteStorageKey(File filesDir, String storageKey) throws IOException {
         requireValid(storageKey);
