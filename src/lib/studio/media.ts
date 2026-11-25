@@ -1,5 +1,4 @@
-import { evenSize } from "@/lib/studio/draw";
-import { renderFrame } from "@/lib/studio/draw";
+import { evenSize, renderFrame } from "@/lib/studio/draw";
 import type { Grade, Region } from "@/lib/studio/types";
 
 const imageCache = new Map<string, Promise<HTMLImageElement>>();
@@ -117,16 +116,34 @@ async function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
   });
 }
 
-export async function extractVideoFrames(
-  file: File,
+export interface BrowserVideoExtractionResult {
+  kind: "browser";
+  width: number;
+  height: number;
+  duration: number;
+  frameCount: number;
+}
+
+/** Browser fallback for web builds. It has no fixed duration or resolution cap. */
+export function extractVideoFrames(
+  source: File,
   fps: number,
   batchSize: number,
   onProgress: (done: number, total: number) => void,
   onBatch: (startIndex: number, frames: Blob[]) => Promise<void>,
-): Promise<{ width: number; height: number; duration: number; frameCount: number }> {
+): Promise<BrowserVideoExtractionResult>;
+
+export async function extractVideoFrames(
+  source: File,
+  fps: number,
+  batchSize: number,
+  onProgress: (done: number, total: number) => void,
+  onBatch: (startIndex: number, frames: Blob[]) => Promise<void>,
+): Promise<BrowserVideoExtractionResult> {
   if (!Number.isFinite(fps) || fps <= 0) throw new Error("Choose a frame rate greater than zero.");
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 64)
     throw new Error("Choose a frame batch size between 1 and 64.");
+  const file = source;
   const url = URL.createObjectURL(file);
   const video = document.createElement("video");
   video.muted = true;
@@ -167,7 +184,13 @@ export async function extractVideoFrames(
         batch = [];
       }
     }
-    return { width: sized.width, height: sized.height, duration, frameCount: count };
+    return {
+      kind: "browser",
+      width: sized.width,
+      height: sized.height,
+      duration,
+      frameCount: count,
+    };
   } finally {
     URL.revokeObjectURL(url);
     video.src = "";
